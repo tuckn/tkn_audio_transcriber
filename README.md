@@ -12,6 +12,28 @@ The CLI verifies its SHA-256 hash again before committing outputs. Meeting-note
 summarization, terminology correction, speaker diarization, and generative AI are
 intentionally outside this repository.
 
+## Script, speech-recognition model, and generative-AI boundary
+
+A script alone cannot turn speech into text. The script orchestrates audio conversion,
+chunking, resume, validation, and output; an automatic speech-recognition (ASR) model
+performs the actual speech-to-text inference. This CLI uses local `faster-whisper`, a
+Whisper-family ASR model.
+
+After the model has been downloaded, normal transcription does not require Codex,
+Copilot, the OpenAI API, or another generative-AI service. Whisper is itself a machine-
+learning model, but this pipeline does not send audio or transcript text to a general-
+purpose LLM or API.
+
+The boundary is:
+
+- `ffmpeg`: convert audio to mono 16 kHz WAV and split it into chunks
+- Python code: manage jobs, resume, heartbeat, validation, and output artifacts
+- `faster-whisper`: convert each audio chunk into text
+- optional generative AI or a person: summarize, organize topics, correct domain terms,
+  and polish prose downstream
+
+That final downstream stage is not part of the base CLI.
+
 ## Requirements
 
 - Windows 10/11 or Linux
@@ -137,6 +159,43 @@ The command does not download a missing model implicitly. Use `model download`
 first. If a run is interrupted, repeat the same `transcribe` command; completed
 chunks are skipped.
 
+Before processing, the CLI estimates scratch-space needs. After normalization, it
+checks the actual WAV size before creating chunks. It refuses to commit final output if
+the normalized WAV format is invalid, total chunk duration differs from decoded audio,
+or the last segment exceeds decoded duration. The manifest records these checks under
+`decoded_audio`. Each stage and heartbeat is stored in the job's `job.json` and
+`run.jsonl`.
+
+### `cleanup`
+
+Applies retention rules to completed job state. The default is a read-only plan;
+`--apply` is required to delete anything.
+
+```console
+tkn-audio-transcriber cleanup --older-than-days 30
+tkn-audio-transcriber cleanup --older-than-days 30 --apply
+```
+
+A job is eligible only when it is `completed`, older than the retention period, and its
+final manifest plus every output size and SHA-256 validate successfully. Running,
+failed, or invalid jobs are preserved. Model caches, the Hugging Face cache, and final
+transcript outputs are outside cleanup scope. Applied checkpoint deletion is not
+reversible, although the validated final outputs remain.
+
+### `status`
+
+Reads durable job state and prints the stage, current chunk, PID, latest heartbeat,
+latest checkpoint, and run-log location as JSON. It is read-only.
+
+```console
+tkn-audio-transcriber status
+tkn-audio-transcriber status --state-dir "D:\transcription-state"
+```
+
+The default heartbeat interval is 60 seconds and can be changed with
+`--heartbeat-seconds` or config. A heartbeat shows that the in-process recognition call
+is alive; it is not a hard ASR timeout.
+
 ### `validate`
 
 Checks manifest schema plus the size and SHA-256 of every output. Add
@@ -216,7 +275,8 @@ errors, `130` for interruption, and `1` for unexpected failures.
 - No automatic terminology correction
 - Model download requires access to Hugging Face
 - `faster-whisper` runs in-process, so its recognition phase does not have the
-  external-process timeout used for `ffmpeg`
+  external-process timeout used for `ffmpeg`; heartbeat is available, but the current
+  chunk cannot yet be forcibly cancelled from another command
 - The manifest records the source path and hashes for provenance; treat it as
   local operational metadata when paths are sensitive
 

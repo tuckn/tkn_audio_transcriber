@@ -24,6 +24,7 @@ DEFAULTS: dict[str, Any] = {
     "state_dir": "~/.tkn/audio_transcriber/state",
     "ffmpeg_executable": "ffmpeg",
     "subprocess_timeout_seconds": 3600,
+    "heartbeat_seconds": 60,
     "keep_working_files": False,
 }
 
@@ -40,6 +41,7 @@ EXPECTED_TYPES: dict[str, type[Any] | tuple[type[Any], ...]] = {
     "state_dir": str,
     "ffmpeg_executable": str,
     "subprocess_timeout_seconds": int,
+    "heartbeat_seconds": int,
     "keep_working_files": bool,
 }
 
@@ -105,6 +107,8 @@ def _validate(values: dict[str, Any]) -> None:
         raise ConfigError("beam_size must be greater than zero")
     if values["subprocess_timeout_seconds"] <= 0:
         raise ConfigError("subprocess_timeout_seconds must be greater than zero")
+    if values["heartbeat_seconds"] <= 0:
+        raise ConfigError("heartbeat_seconds must be greater than zero")
     for key in ("model", "language", "compute_type", "device", "ffmpeg_executable"):
         if not values[key].strip():
             raise ConfigError(f"{key} must not be empty")

@@ -9,7 +9,9 @@ from typing import Any
 from . import __version__
 from .config import ResolvedConfig, resolve_config
 from .errors import AudioTranscriberError
+from .job_state import list_jobs
 from .logging_config import configure_logging
+from .maintenance import cleanup_jobs
 from .model_store import download_model
 from .pipeline import TranscriptionPipeline
 from .validation import validate_artifact
@@ -68,6 +70,11 @@ def _parser() -> argparse.ArgumentParser:
         "--subprocess-timeout-seconds", type=int, help="ffmpeg timeout in seconds."
     )
     transcribe.add_argument(
+        "--heartbeat-seconds",
+        type=int,
+        help="Progress heartbeat interval while a chunk is being recognized.",
+    )
+    transcribe.add_argument(
         "--keep-working-files",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -91,6 +98,26 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also re-hash the original source audio.",
     )
+    cleanup = commands.add_parser(
+        "cleanup", help="Plan or remove validated completed job state."
+    )
+    cleanup.add_argument("--state-dir", type=Path, help="Durable checkpoint root.")
+    cleanup.add_argument(
+        "--older-than-days",
+        type=int,
+        default=30,
+        help="Only include completed jobs at least this many days old (default: 30).",
+    )
+    cleanup.add_argument(
+        "--apply",
+        action="store_true",
+        help="Delete listed job directories; without this option cleanup is read-only.",
+    )
+
+    status = commands.add_parser(
+        "status", help="Show durable transcription job state and heartbeat details."
+    )
+    status.add_argument("--state-dir", type=Path, help="Durable checkpoint root.")
     return parser
 
 
@@ -151,6 +178,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "state_dir": _path_value(args.state_dir),
                 "ffmpeg_executable": args.ffmpeg_executable,
                 "subprocess_timeout_seconds": args.subprocess_timeout_seconds,
+                "heartbeat_seconds": args.heartbeat_seconds,
                 "keep_working_files": args.keep_working_files,
             }
             config = _resolve(args, overrides)
@@ -165,6 +193,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             _json_result(
                 validate_artifact(args.manifest, verify_source=args.verify_source)
             )
+            return 0
+        if args.command == "cleanup":
+            config = _resolve(args, {"state_dir": _path_value(args.state_dir)})
+            state_dir = config.path("state_dir")
+            assert state_dir is not None
+            _json_result(
+                cleanup_jobs(
+                    state_dir,
+                    older_than_days=args.older_than_days,
+                    apply=args.apply,
+                )
+            )
+            return 0
+        if args.command == "status":
+            config = _resolve(args, {"state_dir": _path_value(args.state_dir)})
+            state_dir = config.path("state_dir")
+            assert state_dir is not None
+            _json_result(list_jobs(state_dir))
             return 0
         parser.error("Unsupported command")
         return 2

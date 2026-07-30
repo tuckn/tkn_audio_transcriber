@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import wave
 from pathlib import Path
 
 import pytest
@@ -23,15 +25,23 @@ class FakeFfmpeg:
     def normalize(self, source: Path, destination: Path) -> None:
         self.calls.append("normalize")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(b"normalized")
+        _write_wav(destination, seconds=20)
 
     def split(self, normalized: Path, chunk_dir: Path, chunk_seconds: int) -> list[Path]:
         self.calls.append("split")
         chunk_dir.mkdir(parents=True, exist_ok=True)
         chunks = [chunk_dir / "chunk_000000.wav", chunk_dir / "chunk_000001.wav"]
         for chunk in chunks:
-            chunk.write_bytes(b"chunk")
+            _write_wav(chunk, seconds=10)
         return chunks
+
+
+def _write_wav(path: Path, *, seconds: int) -> None:
+    with wave.open(str(path), "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(16_000)
+        stream.writeframes(b"\x00\x00" * 16_000 * seconds)
 
 
 class FakeRecognizer:
@@ -127,6 +137,10 @@ def test_end_to_end_commit_validate_unchanged_and_source_immutability(
     assert result.outputs.jsonl.is_file()
     assert result.outputs.manifest.is_file()
     assert validate_artifact(result.outputs.manifest, verify_source=True)["status"] == "valid"
+    manifest = json.loads(result.outputs.manifest.read_text(encoding="utf-8"))
+    assert manifest["decoded_audio"]["duration_seconds"] == 20.0
+    job_files = list((tmp_path / "state" / "jobs").glob("*/job.json"))
+    assert json.loads(job_files[0].read_text(encoding="utf-8"))["status"] == "completed"
 
     second = pipeline.transcribe(source, dry_run=False, overwrite=False)
     assert second.status == "unchanged"
@@ -149,6 +163,8 @@ def test_resume_skips_completed_chunks(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="simulated interruption"):
         first.transcribe(source, dry_run=False, overwrite=False)
     assert first_calls == ["chunk_000000.wav", "chunk_000001.wav"]
+    failed_job = next((tmp_path / "state" / "jobs").glob("*/job.json"))
+    assert json.loads(failed_job.read_text(encoding="utf-8"))["status"] == "failed"
 
     resumed_calls: list[str] = []
     resumed = TranscriptionPipeline(

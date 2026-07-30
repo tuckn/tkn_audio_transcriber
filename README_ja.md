@@ -10,6 +10,25 @@ JSONL セグメント、provenance manifest を作成するローカルCLIです
 SHA-256を再確認します。会議メモの要約、用語補正、話者分離、生成AIの呼び出しは、
 意図的にこのリポジトリの対象外としています。
 
+## スクリプト、音声認識モデル、生成AIの境界
+
+文字起こしはスクリプトだけでは成立しません。スクリプトは音声変換、分割、再開、
+検証、出力を制御し、実際の「音声から文字」への変換には音声認識モデルが必要です。
+このCLIでは、ローカルで動く`faster-whisper`（Whisper系ASRモデル）を使用します。
+
+一度モデルをダウンロードすれば、通常の文字起こしでCodex、Copilot、OpenAI API、
+その他の生成AIサービスへ接続する必要はありません。Whisper自体は機械学習モデルですが、
+ここでいう「生成AIとの連携」、すなわち汎用LLM/APIへ音声や文字列を送る処理はありません。
+
+役割の境界は次のとおりです。
+
+- `ffmpeg`: 音声をモノラル16 kHz WAVへ変換し、チャンクへ分割する
+- Pythonスクリプト: job管理、再開、heartbeat、検証、成果物作成を行う
+- `faster-whisper`: 音声チャンクを文字列へ変換する
+- 生成AIまたは人: 必要に応じて、要約、議題整理、固有名詞補正、読みやすい文章化を行う
+
+最後の工程はdownstream処理であり、このリポジトリの基本CLIには含めません。
+
 ## 必要なもの
 
 - Windows 10/11 または Linux
@@ -132,6 +151,39 @@ tkn-audio-transcriber transcribe "C:\path\to\meeting.m4a" `
 中断した場合は同じ`transcribe`コマンドを再実行すると、完了済みチャンクを飛ばして
 再開します。
 
+開始前にscratch容量を概算し、正規化後は実際のWAV容量からチャンク作成分を再確認します。
+正規化WAVの形式・再生時間と全チャンクの合計時間が一致しない場合、または最終segmentが
+decode済み音声長を越える場合は、最終outputを確定しません。decode済み音声情報はmanifestの
+`decoded_audio`へ記録します。各stageとheartbeatはjobの`job.json`と`run.jsonl`へ保存します。
+
+### `cleanup`
+
+完了したjob stateをretention条件に従って整理します。既定は読み取り専用のdry-runで、
+削除には`--apply`が必要です。
+
+```console
+tkn-audio-transcriber cleanup --older-than-days 30
+tkn-audio-transcriber cleanup --older-than-days 30 --apply
+```
+
+対象になるのは、`completed`で、retention期間を過ぎ、最終manifestと全outputのsize・
+SHA-256検証に成功したjobだけです。`running`、`failed`、manifest不正のjobは削除せず、
+model cache、Hugging Face cache、最終文字起こしoutputも対象外です。`--apply`後に消した
+checkpointは元に戻せませんが、検証済みの最終outputは残ります。
+
+### `status`
+
+永続job stateを読み、実行段階、現在のチャンク、PID、最終heartbeat、
+最終checkpoint、run logの場所をJSONで表示します。読み取り専用です。
+
+```console
+tkn-audio-transcriber status
+tkn-audio-transcriber status --state-dir "D:\transcription-state"
+```
+
+heartbeatは既定60秒です。`--heartbeat-seconds`または設定fileで変更できます。
+これは長いASR処理が生存していることを示しますが、ASRの強制timeoutではありません。
+
 ### `validate`
 
 manifest schemaと、全出力のfile size・SHA-256を検証します。
@@ -209,7 +261,7 @@ Schedulerまたはcronから同じ`transcribe`コマンドを実行できます�
 - 用語の自動補正なし
 - model downloadにはHugging Faceへの接続が必要
 - `faster-whisper`はprocess内で動くため、`ffmpeg`に適用する外部process timeoutの
-  対象外
+  対象外。heartbeatは出るが、現在のチャンクを外部から強制停止する機能はない
 - provenanceのためmanifestへ元音声pathとhashを記録する。pathが機微な場合は
   manifestをlocal operational metadataとして扱う
 

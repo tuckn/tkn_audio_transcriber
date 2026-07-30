@@ -7,9 +7,17 @@ import os
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 
 from . import __version__
+from .audio_integrity import (
+    ensure_free_space,
+    estimated_initial_scratch_bytes,
+    inspect_normalized_wav,
+    required_chunk_space_bytes,
+    validate_chunk_coverage,
+)
 from .config import ResolvedConfig
 from .errors import ValidationError
 from .ffmpeg_adapter import FfmpegAdapter
@@ -20,6 +28,7 @@ from .io_utils import (
     read_json,
     sha256_file,
 )
+from .job_state import JobTracker
 from .logging_config import log_success
 from .model_store import configure_huggingface_cache, resolve_local_model
 from .models import Segment, TranscriptionResult
@@ -231,169 +240,210 @@ class TranscriptionPipeline:
         normalized = job_dir / "normalized_16k_mono.wav"
         checkpoint_segments = job_dir / "segments.jsonl"
         progress_path = job_dir / "progress.json"
-        working_manifest = job_dir / "job.json"
         job_dir.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(
-            working_manifest,
-            {
-                "schema_version": 1,
-                "fingerprint": fingerprint,
-                "source": {
-                    "path": str(source_path),
-                    "size": source_stat.st_size,
-                    "sha256": source_hash,
-                },
-                "settings": dict(self.config.values),
-                "status": "running",
-            },
-        )
-
-        if not normalized.is_file():
-            self.logger.info("Normalizing audio to mono 16 kHz WAV")
-            self.ffmpeg.normalize(source_path, normalized)
-        chunks = sorted(chunks_dir.glob("chunk_*.wav"))
-        if not chunks:
-            self.logger.info("Splitting normalized audio into chunks")
-            chunks = self.ffmpeg.split(
-                normalized, chunks_dir, int(self.config.values["chunk_seconds"])
-            )
-
-        processed_chunks: set[str] = set()
-        if progress_path.exists():
-            progress = read_json(progress_path)
-            raw_processed = progress.get("processed_chunks", [])
-            if isinstance(raw_processed, list):
-                processed_chunks = {str(name) for name in raw_processed}
-        segments = _load_segments(checkpoint_segments)
-        next_index = max((segment.index for segment in segments), default=0) + 1
-
-        recognizer = self.recognizer_factory(model_path, self.config)
-        for chunk_position, chunk in enumerate(chunks):
-            if chunk.name in processed_chunks:
-                self.logger.info("Resuming: skipping completed chunk %s", chunk.name)
-                continue
-            offset = chunk_position * int(self.config.values["chunk_seconds"])
-            self.logger.info(
-                "Transcribing chunk %d/%d at %s",
-                chunk_position + 1,
-                len(chunks),
-                format_timestamp(offset),
-            )
-            new_segments, detected_language, probability = recognizer.transcribe_chunk(
-                chunk, offset=float(offset), first_index=next_index
-            )
-            append_jsonl(checkpoint_segments, [segment.to_dict() for segment in new_segments])
-            segments.extend(new_segments)
-            next_index += len(new_segments)
-            processed_chunks.add(chunk.name)
-            atomic_write_json(
-                progress_path,
-                {
-                    "schema_version": 1,
-                    "processed_chunks": sorted(processed_chunks),
-                    "segment_count": len(segments),
-                    "detected_language": detected_language,
-                    "language_probability": probability,
-                },
-            )
-
-        if len(processed_chunks) != len(chunks):
-            raise ValidationError("Not all chunks were processed")
-        segments.sort(key=lambda item: item.index)
-
-        if sha256_file(source_path) != source_hash:
-            raise ValidationError(
-                "Source audio changed during transcription; outputs were not committed"
-            )
-
-        output_dir.mkdir(parents=True, exist_ok=True)
-        pending_markdown = outputs.markdown.with_name(f".{outputs.markdown.name}.pending")
-        pending_srt = outputs.srt.with_name(f".{outputs.srt.name}.pending")
-        pending_jsonl = outputs.jsonl.with_name(f".{outputs.jsonl.name}.pending")
-        atomic_write_text(pending_markdown, _render_markdown(source_path, self.config, segments))
-        atomic_write_text(pending_srt, _render_srt(segments))
-        atomic_write_text(pending_jsonl, _render_jsonl(segments))
-        if "## Transcript" not in pending_markdown.read_text(encoding="utf-8"):
-            raise ValidationError("Generated Markdown is invalid")
-
-        for pending, final in (
-            (pending_markdown, outputs.markdown),
-            (pending_srt, outputs.srt),
-            (pending_jsonl, outputs.jsonl),
-        ):
-            os.replace(pending, final)
-
-        completed_at = datetime.now().astimezone().isoformat(timespec="seconds")
-        output_records = {
-            label: {
-                "path": str(path),
-                "size": path.stat().st_size,
-                "sha256": sha256_file(path),
-            }
-            for label, path in (
-                ("markdown", outputs.markdown),
-                ("srt", outputs.srt),
-                ("jsonl", outputs.jsonl),
-            )
+        source_record = {
+            "path": str(source_path),
+            "size": source_stat.st_size,
+            "sha256": source_hash,
         }
-        atomic_write_json(
-            outputs.manifest,
-            {
-                "schema_version": MANIFEST_SCHEMA_VERSION,
-                "tool": "tkn-audio-transcriber",
-                "tool_version": __version__,
-                "completed_at": completed_at,
-                "fingerprint": fingerprint,
-                "source": {
-                    "path": str(source_path),
-                    "size": source_stat.st_size,
-                    "sha256": source_hash,
-                },
-                "model": {
-                    "requested": self.config.values["model"],
-                    "resolved_path": str(model_path),
-                },
-                "settings": {
-                    key: self.config.values[key]
-                    for key in (
-                        "language",
-                        "chunk_seconds",
-                        "beam_size",
-                        "compute_type",
-                        "device",
-                    )
-                },
-                "segment_count": len(segments),
-                "outputs": output_records,
-            },
-        )
-        validate_artifact(outputs.manifest, verify_source=True)
-
-        atomic_write_json(
-            working_manifest,
-            {
-                "schema_version": 1,
-                "fingerprint": fingerprint,
-                "source": {
-                    "path": str(source_path),
-                    "size": source_stat.st_size,
-                    "sha256": source_hash,
-                },
-                "status": "completed",
-                "output_manifest": str(outputs.manifest),
-            },
-        )
-        if not bool(self.config.values["keep_working_files"]):
-            normalized.unlink(missing_ok=True)
-            for chunk in chunks:
-                chunk.unlink(missing_ok=True)
-            with suppress(OSError):
-                chunks_dir.rmdir()
-        log_success(self.logger, "Transcription completed: %s", outputs.manifest)
-        return TranscriptionResult(
-            status=status,
-            source=source_path,
+        tracker = JobTracker(
+            job_dir=job_dir,
             fingerprint=fingerprint,
-            outputs=outputs,
-            segment_count=len(segments),
+            source=source_record,
+            settings=dict(self.config.values),
+            heartbeat_seconds=int(self.config.values["heartbeat_seconds"]),
+            logger=self.logger,
         )
+        tracker.start()
+        try:
+            tracker.set_stage("disk-preflight")
+            required_initial = estimated_initial_scratch_bytes(source_stat.st_size)
+            free_before = ensure_free_space(
+                state_dir, required_initial, stage="audio normalization"
+            )
+            self.logger.info(
+                "Scratch preflight passed: required=%d bytes, available=%d bytes",
+                required_initial,
+                free_before,
+            )
+
+            if not normalized.is_file():
+                tracker.set_stage("normalizing")
+                self.logger.info("Normalizing audio to mono 16 kHz WAV")
+                self.ffmpeg.normalize(source_path, normalized)
+            normalized_info = inspect_normalized_wav(normalized)
+            ensure_free_space(
+                state_dir,
+                required_chunk_space_bytes(normalized.stat().st_size),
+                stage="chunk creation",
+            )
+
+            chunks = sorted(chunks_dir.glob("chunk_*.wav"))
+            if not chunks:
+                tracker.set_stage("splitting")
+                self.logger.info("Splitting normalized audio into chunks")
+                chunks = self.ffmpeg.split(
+                    normalized, chunks_dir, int(self.config.values["chunk_seconds"])
+                )
+            chunk_duration_seconds = validate_chunk_coverage(normalized_info, chunks)
+
+            processed_chunks: set[str] = set()
+            if progress_path.exists():
+                progress = read_json(progress_path)
+                raw_processed = progress.get("processed_chunks", [])
+                if isinstance(raw_processed, list):
+                    processed_chunks = {str(name) for name in raw_processed}
+            segments = _load_segments(checkpoint_segments)
+            next_index = max((segment.index for segment in segments), default=0) + 1
+
+            recognizer = self.recognizer_factory(model_path, self.config)
+            for chunk_position, chunk in enumerate(chunks):
+                if chunk.name in processed_chunks:
+                    self.logger.info("Resuming: skipping completed chunk %s", chunk.name)
+                    continue
+                offset = chunk_position * int(self.config.values["chunk_seconds"])
+                tracker.set_stage(
+                    "transcribing",
+                    current_chunk=chunk.name,
+                    chunk_position=chunk_position + 1,
+                    chunk_count=len(chunks),
+                )
+                self.logger.info(
+                    "Transcribing chunk %d/%d at %s",
+                    chunk_position + 1,
+                    len(chunks),
+                    format_timestamp(offset),
+                )
+                recognize = partial(
+                    recognizer.transcribe_chunk,
+                    chunk,
+                    offset=float(offset),
+                    first_index=next_index,
+                )
+                new_segments, detected_language, probability = tracker.run_with_heartbeat(
+                    recognize
+                )
+                append_jsonl(
+                    checkpoint_segments, [segment.to_dict() for segment in new_segments]
+                )
+                segments.extend(new_segments)
+                next_index += len(new_segments)
+                processed_chunks.add(chunk.name)
+                atomic_write_json(
+                    progress_path,
+                    {
+                        "schema_version": 1,
+                        "processed_chunks": sorted(processed_chunks),
+                        "segment_count": len(segments),
+                        "detected_language": detected_language,
+                        "language_probability": probability,
+                    },
+                )
+                tracker.checkpoint()
+
+            if len(processed_chunks) != len(chunks):
+                raise ValidationError("Not all chunks were processed")
+            segments.sort(key=lambda item: item.index)
+
+            last_segment_end = max((segment.end for segment in segments), default=0.0)
+            if last_segment_end > normalized_info.duration_seconds + 1.0:
+                raise ValidationError(
+                    "Last transcript segment exceeds decoded audio duration: "
+                    f"segment_end={last_segment_end:.3f}s, "
+                    f"decoded={normalized_info.duration_seconds:.3f}s"
+                )
+
+            if sha256_file(source_path) != source_hash:
+                raise ValidationError(
+                    "Source audio changed during transcription; outputs were not committed"
+                )
+
+            tracker.set_stage("committing")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            pending_markdown = outputs.markdown.with_name(f".{outputs.markdown.name}.pending")
+            pending_srt = outputs.srt.with_name(f".{outputs.srt.name}.pending")
+            pending_jsonl = outputs.jsonl.with_name(f".{outputs.jsonl.name}.pending")
+            atomic_write_text(
+                pending_markdown, _render_markdown(source_path, self.config, segments)
+            )
+            atomic_write_text(pending_srt, _render_srt(segments))
+            atomic_write_text(pending_jsonl, _render_jsonl(segments))
+            if "## Transcript" not in pending_markdown.read_text(encoding="utf-8"):
+                raise ValidationError("Generated Markdown is invalid")
+
+            for pending, final in (
+                (pending_markdown, outputs.markdown),
+                (pending_srt, outputs.srt),
+                (pending_jsonl, outputs.jsonl),
+            ):
+                os.replace(pending, final)
+
+            completed_at = datetime.now().astimezone().isoformat(timespec="seconds")
+            output_records = {
+                label: {
+                    "path": str(path),
+                    "size": path.stat().st_size,
+                    "sha256": sha256_file(path),
+                }
+                for label, path in (
+                    ("markdown", outputs.markdown),
+                    ("srt", outputs.srt),
+                    ("jsonl", outputs.jsonl),
+                )
+            }
+            atomic_write_json(
+                outputs.manifest,
+                {
+                    "schema_version": MANIFEST_SCHEMA_VERSION,
+                    "tool": "tkn-audio-transcriber",
+                    "tool_version": __version__,
+                    "completed_at": completed_at,
+                    "fingerprint": fingerprint,
+                    "source": source_record,
+                    "decoded_audio": {
+                        **normalized_info.to_dict(),
+                        "chunk_duration_seconds": chunk_duration_seconds,
+                        "last_segment_end_seconds": last_segment_end,
+                    },
+                    "model": {
+                        "requested": self.config.values["model"],
+                        "resolved_path": str(model_path),
+                    },
+                    "settings": {
+                        key: self.config.values[key]
+                        for key in (
+                            "language",
+                            "chunk_seconds",
+                            "beam_size",
+                            "compute_type",
+                            "device",
+                        )
+                    },
+                    "segment_count": len(segments),
+                    "outputs": output_records,
+                },
+            )
+            validate_artifact(outputs.manifest, verify_source=True)
+
+            if not bool(self.config.values["keep_working_files"]):
+                for working_file in [normalized, *chunks]:
+                    try:
+                        working_file.unlink(missing_ok=True)
+                    except OSError as exc:
+                        self.logger.warning(
+                            "Could not remove working file %s: %s", working_file, exc
+                        )
+                with suppress(OSError):
+                    chunks_dir.rmdir()
+            tracker.complete(outputs.manifest)
+            log_success(self.logger, "Transcription completed: %s", outputs.manifest)
+            return TranscriptionResult(
+                status=status,
+                source=source_path,
+                fingerprint=fingerprint,
+                outputs=outputs,
+                segment_count=len(segments),
+            )
+        except BaseException as exc:
+            tracker.fail(exc)
+            raise

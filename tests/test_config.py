@@ -47,6 +47,7 @@ def test_config_precedence_and_sources(tmp_path: Path) -> None:
         "schema_version: 1\nunknown_key: value\n",
         "schema_version: 1\nchunk_seconds: false\n",
         "schema_version: 1\nchunk_seconds: 0\n",
+        "schema_version: 1\nheartbeat_seconds: 0\n",
     ],
 )
 def test_invalid_config_is_rejected(tmp_path: Path, content: str) -> None:
