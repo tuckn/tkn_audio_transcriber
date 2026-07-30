@@ -1,0 +1,22 @@
+schema_version: 1
+
+# Transcription defaults
+model: small
+language: ja
+chunk_seconds: 600
+beam_size: 1
+compute_type: int8
+device: cpu
+
+# The output directory must be selected in config or with --output-dir.
+output_dir: null
+
+# Application-managed runtime locations
+model_dir: ~/.cache/audio_transcriber/models
+cache_dir: ~/.cache/audio_transcriber/huggingface
+state_dir: ~/.tkn/audio_transcriber/state
+
+ffmpeg_executable: ffmpeg
+subprocess_timeout_seconds: 3600
+keep_working_files: false
+
