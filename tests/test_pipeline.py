@@ -75,6 +75,7 @@ def make_config(tmp_path: Path) -> ResolvedConfig:
     model = model_dir / "faster-whisper-small"
     model.mkdir(parents=True)
     (model / "model.bin").write_bytes(b"model")
+    (model / "config.json").write_text("{}", encoding="utf-8")
     return resolve_config(
         cwd=tmp_path,
         home=tmp_path / "home",
@@ -111,6 +112,49 @@ def test_dry_run_changes_nothing_and_preserves_source(tmp_path: Path) -> None:
     assert sha256_file(source) == before
     assert not (tmp_path / "outputs").exists()
     assert not (tmp_path / "state").exists()
+
+
+def test_transcribe_ensures_missing_model_before_audio_processing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "meeting.flac"
+    source.write_bytes(b"immutable source")
+    config = make_config(tmp_path)
+    target = tmp_path / "models" / "faster-whisper-small"
+    (target / "model.bin").unlink()
+    (target / "config.json").unlink()
+    target.rmdir()
+    ensure_calls: list[tuple[str, Path, Path]] = []
+
+    def fake_ensure_local_model(
+        *,
+        model: str,
+        model_dir: Path,
+        cache_dir: Path,
+        logger: logging.Logger,
+    ) -> Path:
+        ensure_calls.append((model, model_dir, cache_dir))
+        target.mkdir(parents=True)
+        (target / "model.bin").write_bytes(b"model")
+        (target / "config.json").write_text("{}", encoding="utf-8")
+        return target
+
+    monkeypatch.setattr(
+        "audio_transcriber.pipeline.ensure_local_model", fake_ensure_local_model
+    )
+    pipeline = TranscriptionPipeline(
+        config=config,
+        logger=make_logger(),
+        ffmpeg=FakeFfmpeg([]),  # type: ignore[arg-type]
+        recognizer_factory=lambda model, cfg: FakeRecognizer([]),
+    )
+
+    result = pipeline.transcribe(source, dry_run=False, overwrite=False)
+
+    assert result.status == "created"
+    assert ensure_calls == [
+        ("small", tmp_path / "models", tmp_path / "cache"),
+    ]
 
 
 def test_end_to_end_commit_validate_unchanged_and_source_immutability(
@@ -195,4 +239,3 @@ def test_different_existing_output_requires_overwrite(tmp_path: Path) -> None:
         make().transcribe(source, dry_run=False, overwrite=False)
     replaced = make().transcribe(source, dry_run=False, overwrite=True)
     assert replaced.status == "replaced"
-

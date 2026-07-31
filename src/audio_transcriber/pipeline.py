@@ -30,7 +30,7 @@ from .io_utils import (
 )
 from .job_state import JobTracker
 from .logging_config import log_success
-from .model_store import configure_huggingface_cache, resolve_local_model
+from .model_store import ensure_local_model
 from .models import Segment, TranscriptionResult
 from .paths import job_directory, output_paths
 from .validation import MANIFEST_SCHEMA_VERSION, validate_artifact
@@ -232,8 +232,12 @@ class TranscriptionPipeline:
             )
 
         self.ffmpeg.ensure_available()
-        model_path = resolve_local_model(str(self.config.values["model"]), model_dir)
-        configure_huggingface_cache(cache_dir)
+        model_path = ensure_local_model(
+            model=str(self.config.values["model"]),
+            model_dir=model_dir,
+            cache_dir=cache_dir,
+            logger=self.logger,
+        )
 
         job_dir = job_directory(state_dir, source_path, fingerprint)
         chunks_dir = job_dir / "chunks"

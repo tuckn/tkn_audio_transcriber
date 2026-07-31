@@ -64,19 +64,24 @@ uv tool install -e . --force
 - ユーザー設定: `~/.tkn/audio_transcriber/config.yaml`
 - 作業ディレクトリ固有の上書き: `./.tkn/config.yaml`
 
-実設定の`./.tkn/config.yaml`はGitの除外対象です。最小設定は次のとおりです。
+実設定の`./.tkn/config.yaml`はGitの除外対象です。文字起こし結果は既定でcurrent
+working directoryへ出力します。明示すると次の設定と同じです。
 
 ```yaml
 schema_version: 1
-output_dir: C:/path/to/transcripts
+output_dir: .
 ```
 
-モデルは明示的にダウンロードします。通常のコマンドでネットワークを使うのは
-この操作だけです。
+初回文字起こし時に既知のモデルがなければ、Hugging Faceから自動ダウンロードします。
+事前に取得しておくこともできます。
 
 ```console
 tkn-audio-transcriber model download small
 ```
+
+`small`はapplication独自のラベルではなく、OpenAI Whisperの正式な多言語モデル
+サイズ名です。約2.44億parameterのモデルで、このCLIはlocal推論用にCTranslate2変換
+された`Systran/faster-whisper-small`へ対応付けます。
 
 書き込まずに計画だけ確認できます。
 
@@ -98,11 +103,10 @@ tkn-audio-transcriber transcribe "C:\path\to\meeting.flac" `
 ```
 
 入力fingerprintと出力予定を確認するだけで、output、state、cache、reportを
-変更しない実行です。
+変更しない実行です。この例ではcurrent working directoryを出力先に使います。
 
 ```powershell
-tkn-audio-transcriber transcribe "C:\path\to\meeting.flac" `
-  --output-dir "C:\path\to\transcripts" --dry-run
+tkn-audio-transcriber transcribe "C:\path\to\meeting.flac" --dry-run
 ```
 
 ## コマンド
@@ -121,7 +125,8 @@ tkn-audio-transcriber --config "C:\path\to\config.yaml" config show
 
 `faster-whisper`モデルを設定済みのmodel directoryへダウンロードします。
 Hugging Faceへのnetwork accessを使いますが、元音声や文字起こし出力には触れません。
-完全なモデルがすでにある場合は`unchanged`を返します。
+完全なモデルがすでにある場合は`unchanged`を返します。文字起こし前に準備する場合や、
+network接続が利用できる間に取得しておく場合に使用します。
 
 ```console
 tkn-audio-transcriber model download small
@@ -147,9 +152,9 @@ tkn-audio-transcriber transcribe "C:\path\to\meeting.m4a" `
 - `--keep-working-files`: 検証成功後も正規化WAVとチャンクを保持する。
   監査・再開用checkpointは常に保持する
 
-不足モデルは暗黙にダウンロードしません。先に`model download`を実行します。
-中断した場合は同じ`transcribe`コマンドを再実行すると、完了済みチャンクを飛ばして
-再開します。
+設定した既知モデル（`tiny`、`base`、`small`、`medium`、`large-v3`）がなければ、
+音声処理前に自動ダウンロードします。`--dry-run`ではダウンロードしません。中断した
+場合は同じ`transcribe`コマンドを再実行すると、完了済みチャンクを飛ばして再開します。
 
 開始前にscratch容量を概算し、正規化後は実際のWAV容量からチャンク作成分を再確認します。
 正規化WAVの形式・再生時間と全チャンクの合計時間が一致しない場合、または最終segmentが
@@ -214,8 +219,9 @@ application管理のruntime dataは役割ごとに分離します。
 ~/.cache/audio_transcriber/huggingface/  再取得可能なdownload cache
 ```
 
-明示的に設定しない限り、リポジトリのルートへruntime fileを作りません。すべての
-設定sourceにある相対pathは、current working directoryを基準に解決します。
+最終文字起こしoutputは既定でcurrent working directoryへ作成します。state、model、
+cacheは上記のapplication管理場所へ分離したままです。すべての設定sourceにある
+相対pathは、current working directoryを基準に解決します。
 
 ## 冪等性と失敗時の動作
 
@@ -259,7 +265,8 @@ Schedulerまたはcronから同じ`transcribe`コマンドを実行できます�
 - 話者分離なし
 - 会議要約・生成AI呼び出しなし
 - 用語の自動補正なし
-- model downloadにはHugging Faceへの接続が必要
+- 不足モデルを使う初回実行にはHugging Faceへの接続が必要。offline環境では事前に
+  `model download`を実行する
 - `faster-whisper`はprocess内で動くため、`ffmpeg`に適用する外部process timeoutの
   対象外。heartbeatは出るが、現在のチャンクを外部から強制停止する機能はない
 - provenanceのためmanifestへ元音声pathとhashを記録する。pathが機微な場合は

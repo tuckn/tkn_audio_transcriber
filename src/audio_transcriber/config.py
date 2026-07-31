@@ -18,7 +18,7 @@ DEFAULTS: dict[str, Any] = {
     "beam_size": 1,
     "compute_type": "int8",
     "device": "cpu",
-    "output_dir": None,
+    "output_dir": ".",
     "model_dir": "~/.cache/audio_transcriber/models",
     "cache_dir": "~/.cache/audio_transcriber/huggingface",
     "state_dir": "~/.tkn/audio_transcriber/state",
@@ -174,4 +174,3 @@ def resolve_config(
     _validate(values)
     _resolve_paths(values, current_directory)
     return ResolvedConfig(values=values, sources=sources, loaded_files=tuple(loaded_files))
-

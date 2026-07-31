@@ -69,19 +69,25 @@ Copy `.tkn/config.example.yaml` to one of these locations and edit it:
 - user setting: `~/.tkn/audio_transcriber/config.yaml`
 - working-directory override: `./.tkn/config.yaml`
 
-The real `./.tkn/config.yaml` is ignored by Git. The simplest useful setting is:
+The real `./.tkn/config.yaml` is ignored by Git. Transcript outputs default to
+the current working directory. The equivalent explicit setting is:
 
 ```yaml
 schema_version: 1
-output_dir: C:/path/to/transcripts
+output_dir: .
 ```
 
-Download a model explicitly. This is the only normal command that requires
-network access:
+On the first transcription, a missing known model is downloaded automatically
+from Hugging Face. You can also download it in advance:
 
 ```console
 tkn-audio-transcriber model download small
 ```
+
+`small` is an official multilingual OpenAI Whisper model-size name, not an
+application-specific label. It has about 244 million parameters. This CLI maps
+it to the CTranslate2-converted `Systran/faster-whisper-small` repository for
+local inference.
 
 Preview the download without writing:
 
@@ -105,11 +111,11 @@ tkn-audio-transcriber transcribe "C:\path\to\meeting.flac" ^
 In PowerShell, use a backtick instead of `^` for multiline commands.
 
 Preview all resolved paths and the input fingerprint without creating output,
-state, cache, or report files:
+state, cache, or report files. This example uses the current working directory
+as the output directory:
 
 ```console
-tkn-audio-transcriber transcribe "C:\path\to\meeting.flac" ^
-  --output-dir "C:\path\to\transcripts" --dry-run
+tkn-audio-transcriber transcribe "C:\path\to\meeting.flac" --dry-run
 ```
 
 ## Commands
@@ -128,7 +134,8 @@ tkn-audio-transcriber --config "C:\path\to\config.yaml" config show
 
 Downloads a `faster-whisper` model into the configured model directory. It uses
 Hugging Face network access but does not touch source audio or transcript output.
-An existing complete model returns `unchanged`.
+An existing complete model returns `unchanged`. Use this command to prepare a
+machine before transcription or while network access is available.
 
 ```console
 tkn-audio-transcriber model download small
@@ -155,9 +162,10 @@ Important safety options:
 - `--keep-working-files`: retain the normalized WAV and chunks after successful
   verification; checkpoints are always retained for audit/resume
 
-The command does not download a missing model implicitly. Use `model download`
-first. If a run is interrupted, repeat the same `transcribe` command; completed
-chunks are skipped.
+If the configured known model (`tiny`, `base`, `small`, `medium`, or `large-v3`)
+is missing, the command downloads it automatically before audio processing.
+`--dry-run` never downloads a model. If a run is interrupted, repeat the same
+`transcribe` command; completed chunks are skipped.
 
 Before processing, the CLI estimates scratch-space needs. After normalization, it
 checks the actual WAV size before creating chunks. It refuses to commit final output if
@@ -226,9 +234,9 @@ Application-managed runtime data is separated by role:
 ~/.cache/audio_transcriber/huggingface/ replaceable download cache
 ```
 
-The repository root is not used for runtime data unless you explicitly configure
-it. Relative paths in all config sources are resolved from the current working
-directory.
+Final transcript outputs default to the current working directory. State, model,
+and cache data remain in the application-managed locations above. Relative paths
+in all config sources are resolved from the current working directory.
 
 ## Idempotency and failure behavior
 
@@ -273,7 +281,8 @@ errors, `130` for interruption, and `1` for unexpected failures.
 - No speaker diarization
 - No meeting summary or generative-AI call
 - No automatic terminology correction
-- Model download requires access to Hugging Face
+- The first run for a missing model requires access to Hugging Face; use
+  `model download` in advance for an offline transcription machine
 - `faster-whisper` runs in-process, so its recognition phase does not have the
   external-process timeout used for `ffmpeg`; heartbeat is available, but the current
   chunk cannot yet be forcibly cancelled from another command

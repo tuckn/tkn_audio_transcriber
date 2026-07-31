@@ -27,7 +27,11 @@ def model_directory_name(model: str, repository_id: str) -> str:
 
 
 def _contains_model(path: Path) -> bool:
-    return path.is_dir() and (path / "model.bin").is_file()
+    return (
+        path.is_dir()
+        and (path / "model.bin").is_file()
+        and (path / "config.json").is_file()
+    )
 
 
 def resolve_local_model(model: str, model_dir: Path) -> Path:
@@ -83,5 +87,31 @@ def download_model(
         raise ValidationError(f"Model download failed: {exc}") from exc
     if not _contains_model(target):
         raise ValidationError(f"Downloaded model is incomplete: {target}")
+    logger.info("Model download completed: %s", target)
     return result
 
+
+def ensure_local_model(
+    *,
+    model: str,
+    model_dir: Path,
+    cache_dir: Path,
+    logger: logging.Logger,
+) -> Path:
+    """Resolve a local model, downloading a known model alias when necessary."""
+    try:
+        return resolve_local_model(model, model_dir)
+    except ValidationError:
+        explicit = Path(model).expanduser()
+        if explicit.exists() or model not in KNOWN_MODELS:
+            raise
+
+    logger.info("Model %s is not available locally; downloading automatically", model)
+    download_model(
+        model=model,
+        model_dir=model_dir,
+        cache_dir=cache_dir,
+        dry_run=False,
+        logger=logger,
+    )
+    return resolve_local_model(model, model_dir)

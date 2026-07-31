@@ -67,3 +67,9 @@ def test_relative_paths_are_resolved_from_current_working_directory(tmp_path: Pa
     )
     assert resolved.path("output_dir") == (tmp_path / "relative" / "output").resolve()
 
+
+def test_output_dir_defaults_to_current_working_directory(tmp_path: Path) -> None:
+    resolved = resolve_config(cwd=tmp_path, home=tmp_path / "home")
+
+    assert resolved.path("output_dir") == tmp_path.resolve()
+    assert resolved.sources["output_dir"] == "built-in default"
