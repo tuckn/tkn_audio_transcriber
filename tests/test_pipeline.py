@@ -6,7 +6,9 @@ import wave
 from pathlib import Path
 
 import pytest
+import yaml
 
+from audio_transcriber import __version__
 from audio_transcriber.config import ResolvedConfig, resolve_config
 from audio_transcriber.errors import ValidationError
 from audio_transcriber.io_utils import sha256_file
@@ -181,6 +183,20 @@ def test_end_to_end_commit_validate_unchanged_and_source_immutability(
     assert result.outputs.jsonl.is_file()
     assert result.outputs.manifest.is_file()
     assert validate_artifact(result.outputs.manifest, verify_source=True)["status"] == "valid"
+    markdown = result.outputs.markdown.read_text(encoding="utf-8")
+    _, frontmatter, body = markdown.split("---", maxsplit=2)
+    assert yaml.safe_load(frontmatter) == {
+        "source": "会議.flac",
+        "model": "small",
+        "engine": "faster-whisper",
+        "language": "ja",
+        "speaker_separation": False,
+        "chunk_seconds": 10,
+        "transcriber": "tkn-audio-transcriber",
+        "transcriber_version": __version__,
+    }
+    assert body.startswith("\n\n# 会議 Transcript\n\n## Transcript\n\n")
+    assert "- Source:" not in markdown
     manifest = json.loads(result.outputs.manifest.read_text(encoding="utf-8"))
     assert manifest["decoded_audio"]["duration_seconds"] == 20.0
     job_files = list((tmp_path / "state" / "jobs").glob("*/job.json"))
