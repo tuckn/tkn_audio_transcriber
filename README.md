@@ -226,6 +226,15 @@ meeting_transcript.jsonl
 meeting_transcript.manifest.json
 ```
 
+The four files share one basename and form a single output set:
+
+| File | Purpose |
+| --- | --- |
+| `*_transcript.md` | Primary human-readable transcript. Its YAML Frontmatter records the source, model, engine, language, speaker-separation status, chunk length, transcriber name, and transcriber version. The body contains timestamped transcript text. Start with this file for reading, review, or downstream summarization. |
+| `*_transcript.srt` | Standard subtitle file for media players and video editors. Each cue contains a sequence number, time range, and recognized text. |
+| `*_transcript.jsonl` | Machine-readable segment data with one JSON object per line. Each segment contains `index`, `start`, `end`, `text`, and the source `chunk`; use it for scripts, analysis, or alternate rendering. |
+| `*_transcript.manifest.json` | Provenance and validation record. It stores the source path and hash, decoded-audio checks, model and settings, and each output's size and SHA-256. Pass this file to `validate` and keep it with the other three outputs. |
+
 Application-managed runtime data is separated by role:
 
 ```text

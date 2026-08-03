@@ -211,6 +211,15 @@ meeting_transcript.jsonl
 meeting_transcript.manifest.json
 ```
 
+4つのfileは同じbasenameを持つ、1組の出力成果物です。
+
+| file | 内容・用途 |
+| --- | --- |
+| `*_transcript.md` | 人が読むための主成果物です。YAML Frontmatterに元音声、model、engine、言語、話者分離の有無、chunk秒数、transcriber名、transcriber versionを記録し、本文にtimestamp付きの文字起こしを格納します。内容確認、レビュー、後続の要約では、まずこのfileを使用します。 |
+| `*_transcript.srt` | media playerやvideo editorで利用できる標準字幕fileです。各字幕に連番、開始・終了時刻、認識textを格納します。 |
+| `*_transcript.jsonl` | 1行に1つのJSON objectを格納する機械処理向けのsegment dataです。各segmentは`index`、`start`、`end`、`text`、処理元の`chunk`を持ち、script処理、分析、別形式への変換に使用できます。 |
+| `*_transcript.manifest.json` | provenanceと検証用の記録です。元音声のpath・hash、decode後音声の検査結果、model・設定、各出力のfile size・SHA-256を格納します。`validate`にはこのfileを指定し、ほかの3fileと一緒に保管します。 |
+
 application管理のruntime dataは役割ごとに分離します。
 
 ```text
