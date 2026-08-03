@@ -20,7 +20,9 @@ from .validation import validate_artifact
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tkn-audio-transcriber",
-        description="Create local Markdown, SRT, and JSONL transcripts from audio.",
+        description=(
+            "Create local Markdown, SRT, and JSONL transcripts from audio or video."
+        ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
@@ -54,7 +56,12 @@ def _parser() -> argparse.ArgumentParser:
     transcribe = commands.add_parser(
         "transcribe", help="Normalize, split, transcribe, verify, and commit outputs."
     )
-    transcribe.add_argument("audio", type=Path, help="Source audio file (never modified).")
+    transcribe.add_argument(
+        "audio",
+        type=Path,
+        metavar="SOURCE",
+        help="Source audio or video file with an audio stream (never modified).",
+    )
     transcribe.add_argument("--output-dir", type=Path, help="Transcript output directory.")
     transcribe.add_argument("--model", help="Model name or local model directory.")
     transcribe.add_argument("--language", help="Language code, for example ja or en.")
@@ -96,7 +103,7 @@ def _parser() -> argparse.ArgumentParser:
     validate.add_argument(
         "--verify-source",
         action="store_true",
-        help="Also re-hash the original source audio.",
+        help="Also re-hash the original source media file.",
     )
     cleanup = commands.add_parser(
         "cleanup", help="Plan or remove validated completed job state."

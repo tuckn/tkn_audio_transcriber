@@ -11,6 +11,15 @@ def test_help_and_version(capsys: object) -> None:
         assert exc.code == 0
 
 
+def test_transcribe_help_describes_audio_and_video(capsys: object) -> None:
+    try:
+        main(["transcribe", "--help"])
+    except SystemExit as exc:
+        assert exc.code == 0
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    assert "Source audio or video file with an audio stream" in captured.out
+
+
 def test_config_show_outputs_machine_readable_json(
     tmp_path: Path, monkeypatch: object, capsys: object
 ) -> None:

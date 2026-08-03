@@ -183,7 +183,7 @@ class TranscriptionPipeline:
     ) -> TranscriptionResult:
         source_path = source.expanduser().resolve()
         if not source_path.is_file():
-            raise ValidationError(f"Source audio file not found: {source_path}")
+            raise ValidationError(f"Source media file not found: {source_path}")
         output_dir = self.config.path("output_dir")
         state_dir = self.config.path("state_dir")
         model_dir = self.config.path("model_dir")
@@ -197,7 +197,7 @@ class TranscriptionPipeline:
         assert cache_dir is not None
 
         source_stat = source_path.stat()
-        self.logger.info("Hashing source audio: %s", source_path)
+        self.logger.info("Hashing source media: %s", source_path)
         source_hash = sha256_file(source_path)
         fingerprint = _fingerprint(source_hash, source_stat.st_size, self.config)
         outputs = output_paths(output_dir, source_path)
@@ -268,7 +268,7 @@ class TranscriptionPipeline:
             tracker.set_stage("disk-preflight")
             required_initial = estimated_initial_scratch_bytes(source_stat.st_size)
             free_before = ensure_free_space(
-                state_dir, required_initial, stage="audio normalization"
+                state_dir, required_initial, stage="media audio normalization"
             )
             self.logger.info(
                 "Scratch preflight passed: required=%d bytes, available=%d bytes",
@@ -364,7 +364,7 @@ class TranscriptionPipeline:
 
             if sha256_file(source_path) != source_hash:
                 raise ValidationError(
-                    "Source audio changed during transcription; outputs were not committed"
+                    "Source media changed during transcription; outputs were not committed"
                 )
 
             tracker.set_stage("committing")

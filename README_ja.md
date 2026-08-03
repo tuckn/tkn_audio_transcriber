@@ -2,11 +2,12 @@
 
 [English](README.md)
 
-`tkn_audio_transcriber` は、音声ファイルから Markdown 文字起こし、SRT 字幕、
-JSONL セグメント、provenance manifest を作成するローカルCLIです。`ffmpeg`で
-モノラル16 kHzへの正規化と分割を行い、`faster-whisper`で音声認識します。
+`tkn_audio_transcriber` は、音声ファイル、または動画ファイル内の音声ストリームから
+Markdown文字起こし、SRT字幕、JSONLセグメント、provenance manifestを作成する
+ローカルCLIです。`ffmpeg`でモノラル16 kHzへの正規化と分割を行い、
+`faster-whisper`で音声認識します。
 
-元音声は読み取り専用で扱い、移動・削除・上書きをしません。出力を確定する直前にも
+元のメディアファイルは読み取り専用で扱い、移動・削除・上書きをしません。出力を確定する直前にも
 SHA-256を再確認します。会議メモの要約、用語補正、話者分離、生成AIの呼び出しは、
 意図的にこのリポジトリの対象外としています。
 
@@ -22,7 +23,8 @@ SHA-256を再確認します。会議メモの要約、用語補正、話者分�
 
 役割の境界は次のとおりです。
 
-- `ffmpeg`: 音声をモノラル16 kHz WAVへ変換し、チャンクへ分割する
+- `ffmpeg`: 先頭の音声ストリームを抽出し、モノラル16 kHz WAVへ変換してチャンクへ
+  分割する。映像フレームは使用しない
 - Pythonスクリプト: job管理、再開、heartbeat、検証、成果物作成を行う
 - `faster-whisper`: 音声チャンクを文字列へ変換する
 - 生成AIまたは人: 必要に応じて、要約、議題整理、固有名詞補正、読みやすい文章化を行う
@@ -36,6 +38,10 @@ SHA-256を再確認します。会議メモの要約、用語補正、話者分�
 - [`uv`](https://docs.astral.sh/uv/)
 - `PATH`から実行できる`ffmpeg`、または設定した`ffmpeg_executable`
 - 実行中のモノラル16 kHz WAVと分割チャンクを保存できる空き容量
+
+入力拡張子の固定リストは設けていません。`ffmpeg`がデコードでき、音声ストリームを
+1つ以上含むローカルの音声・動画ファイルを受け付けます。代表例は`.wav`、`.flac`、
+`.mp3`、`.m4a`、`.mp4`です。
 
 最初はCPUと`small`モデルを推奨します。`medium`は一般に認識精度が上がる一方、
 メモリ使用量と処理時間が増えます。
@@ -124,7 +130,7 @@ tkn-audio-transcriber --config "C:\path\to\config.yaml" config show
 ### `model download`
 
 `faster-whisper`モデルを設定済みのmodel directoryへダウンロードします。
-Hugging Faceへのnetwork accessを使いますが、元音声や文字起こし出力には触れません。
+Hugging Faceへのnetwork accessを使いますが、元のメディアや文字起こし出力には触れません。
 完全なモデルがすでにある場合は`unchanged`を返します。文字起こし前に準備する場合や、
 network接続が利用できる間に取得しておく場合に使用します。
 
@@ -135,13 +141,24 @@ tkn-audio-transcriber model download medium --model-dir "D:\models"
 
 ### `transcribe`
 
-元音声の検証とhash計算、派生音声の正規化、チャンク作成、checkpointからの再開、
-音声認識、元音声が変わっていないことの再検証、出力確定を順に行います。
+元メディアの検証とhash計算、派生音声の正規化、チャンク作成、checkpointからの再開、
+音声認識、元メディアが変わっていないことの再検証、出力確定を順に行います。
+
+動画ファイルでは、`ffmpeg`が先頭の音声ストリーム（`0:a:0`）を選択し、映像ストリームを
+破棄します。元動画は変更せず、出力名には元動画のファイル名（拡張子を除く）を使います。
 
 ```powershell
 tkn-audio-transcriber transcribe "C:\path\to\meeting.m4a" `
   --output-dir "C:\path\to\transcripts" `
   --model small --language ja --chunk-seconds 600
+```
+
+MP4録画も同じコマンドで処理できます。
+
+```powershell
+tkn-audio-transcriber transcribe "C:\path\to\town-hall.mp4" `
+  --output-dir "C:\path\to\transcripts" `
+  --model small --language en
 ```
 
 安全性に関する主なoptionは次のとおりです。
@@ -192,7 +209,7 @@ heartbeatは既定60秒です。`--heartbeat-seconds`または設定fileで変�
 ### `validate`
 
 manifest schemaと、全出力のfile size・SHA-256を検証します。
-`--verify-source`を付けると元音声も再度hash検証します。
+`--verify-source`を付けると元メディアも再度hash検証します。
 
 ```powershell
 tkn-audio-transcriber validate "C:\path\to\meeting_transcript.manifest.json"
@@ -215,10 +232,10 @@ meeting_transcript.manifest.json
 
 | file | 内容・用途 |
 | --- | --- |
-| `*_transcript.md` | 人が読むための主成果物です。YAML Frontmatterに元音声、model、engine、言語、話者分離の有無、chunk秒数、transcriber名、transcriber versionを記録し、本文にtimestamp付きの文字起こしを格納します。内容確認、レビュー、後続の要約では、まずこのfileを使用します。 |
+| `*_transcript.md` | 人が読むための主成果物です。YAML Frontmatterに元メディア、model、engine、言語、話者分離の有無、chunk秒数、transcriber名、transcriber versionを記録し、本文にtimestamp付きの文字起こしを格納します。内容確認、レビュー、後続の要約では、まずこのfileを使用します。 |
 | `*_transcript.srt` | media playerやvideo editorで利用できる標準字幕fileです。各字幕に連番、開始・終了時刻、認識textを格納します。 |
 | `*_transcript.jsonl` | 1行に1つのJSON objectを格納する機械処理向けのsegment dataです。各segmentは`index`、`start`、`end`、`text`、処理元の`chunk`を持ち、script処理、分析、別形式への変換に使用できます。 |
-| `*_transcript.manifest.json` | provenanceと検証用の記録です。元音声のpath・hash、decode後音声の検査結果、model・設定、各出力のfile size・SHA-256を格納します。`validate`にはこのfileを指定し、ほかの3fileと一緒に保管します。 |
+| `*_transcript.manifest.json` | provenanceと検証用の記録です。元メディアのpath・hash、decode後音声の検査結果、model・設定、各出力のfile size・SHA-256を格納します。`validate`にはこのfileを指定し、ほかの3fileと一緒に保管します。 |
 
 application管理のruntime dataは役割ごとに分離します。
 
@@ -265,7 +282,7 @@ unknown key、不正な型、未対応`schema_version`はerrorです。`config s
 
 ## 定期実行
 
-`uv tool install -e .`でinstallし、元音声と出力に絶対pathを使えば、Windows Task
+`uv tool install -e .`でinstallし、元メディアと出力に絶対pathを使えば、Windows Task
 Schedulerまたはcronから同じ`transcribe`コマンドを実行できます。終了コードは、
 成功`0`、想定内の設定・入力・検証error`2`、中断`130`、想定外error`1`です。
 
@@ -278,7 +295,7 @@ Schedulerまたはcronから同じ`transcribe`コマンドを実行できます�
   `model download`を実行する
 - `faster-whisper`はprocess内で動くため、`ffmpeg`に適用する外部process timeoutの
   対象外。heartbeatは出るが、現在のチャンクを外部から強制停止する機能はない
-- provenanceのためmanifestへ元音声pathとhashを記録する。pathが機微な場合は
+- provenanceのためmanifestへ元メディアpathとhashを記録する。pathが機微な場合は
   manifestをlocal operational metadataとして扱う
 
 ## 開発と検証

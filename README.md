@@ -2,12 +2,13 @@
 
 [日本語](README_ja.md)
 
-`tkn_audio_transcriber` is a local CLI that turns an audio file into a Markdown
-transcript, SRT subtitles, JSONL segments, and a provenance manifest. It uses
+`tkn_audio_transcriber` is a local CLI that turns an audio file, or the audio stream
+inside a video file, into a Markdown transcript, SRT subtitles, JSONL segments, and a
+provenance manifest. It uses
 `ffmpeg` for mono/16 kHz normalization and chunking, then `faster-whisper` for
 speech recognition.
 
-The source audio is opened read-only and is never moved, deleted, or overwritten.
+The source media file is opened read-only and is never moved, deleted, or overwritten.
 The CLI verifies its SHA-256 hash again before committing outputs. Meeting-note
 summarization, terminology correction, speaker diarization, and generative AI are
 intentionally outside this repository.
@@ -26,7 +27,8 @@ purpose LLM or API.
 
 The boundary is:
 
-- `ffmpeg`: convert audio to mono 16 kHz WAV and split it into chunks
+- `ffmpeg`: extract the first audio stream, convert it to mono 16 kHz WAV, and split it
+  into chunks; video frames are ignored
 - Python code: manage jobs, resume, heartbeat, validation, and output artifacts
 - `faster-whisper`: convert each audio chunk into text
 - optional generative AI or a person: summarize, organize topics, correct domain terms,
@@ -41,6 +43,10 @@ That final downstream stage is not part of the base CLI.
 - [`uv`](https://docs.astral.sh/uv/)
 - `ffmpeg` available on `PATH`, or an absolute `ffmpeg_executable` in config
 - Enough disk space for a mono 16 kHz WAV and split chunks while a job is running
+
+There is no extension allowlist. Any local audio or video file that `ffmpeg` can decode
+and that contains at least one audio stream is accepted. This includes common inputs
+such as `.wav`, `.flac`, `.mp3`, `.m4a`, and `.mp4`.
 
 CPU use with the `small` model is the recommended first run. `medium` generally
 improves recognition at the cost of more memory and processing time.
@@ -133,7 +139,7 @@ tkn-audio-transcriber --config "C:\path\to\config.yaml" config show
 ### `model download`
 
 Downloads a `faster-whisper` model into the configured model directory. It uses
-Hugging Face network access but does not touch source audio or transcript output.
+Hugging Face network access but does not touch source media or transcript output.
 An existing complete model returns `unchanged`. Use this command to prepare a
 machine before transcription or while network access is available.
 
@@ -148,10 +154,21 @@ The command validates and hashes the source, normalizes a derived copy, creates
 chunks, resumes any matching checkpoint, recognizes speech, verifies the source
 is unchanged, then commits validated outputs.
 
+For a video file, `ffmpeg` selects the first audio stream (`0:a:0`) and discards the
+video stream. The original video remains unchanged, and output names use its file stem.
+
 ```console
 tkn-audio-transcriber transcribe "C:\path\to\meeting.m4a" ^
   --output-dir "C:\path\to\transcripts" ^
   --model small --language ja --chunk-seconds 600
+```
+
+An MP4 recording uses the same command:
+
+```console
+tkn-audio-transcriber transcribe "C:\path\to\town-hall.mp4" ^
+  --output-dir "C:\path\to\transcripts" ^
+  --model small --language en
 ```
 
 Important safety options:
@@ -280,7 +297,7 @@ Unknown keys, invalid types, and unsupported `schema_version` values are errors.
 
 ## Scheduled operation
 
-Install the CLI with `uv tool install -e .`, use absolute source/output paths,
+Install the CLI with `uv tool install -e .`, use absolute source-media/output paths,
 and run the same `transcribe` command from Windows Task Scheduler or cron. The
 command returns `0` on success, `2` for expected configuration/input/validation
 errors, `130` for interruption, and `1` for unexpected failures.
@@ -295,7 +312,7 @@ errors, `130` for interruption, and `1` for unexpected failures.
 - `faster-whisper` runs in-process, so its recognition phase does not have the
   external-process timeout used for `ffmpeg`; heartbeat is available, but the current
   chunk cannot yet be forcibly cancelled from another command
-- The manifest records the source path and hashes for provenance; treat it as
+- The manifest records the source media path and hashes for provenance; treat it as
   local operational metadata when paths are sensitive
 
 ## Development and verification

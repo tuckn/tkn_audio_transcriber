@@ -116,6 +116,22 @@ def test_dry_run_changes_nothing_and_preserves_source(tmp_path: Path) -> None:
     assert not (tmp_path / "state").exists()
 
 
+def test_dry_run_accepts_mp4_source(tmp_path: Path) -> None:
+    source = tmp_path / "town-hall.mp4"
+    source.write_bytes(b"immutable video container")
+    pipeline = TranscriptionPipeline(
+        config=make_config(tmp_path),
+        logger=make_logger(),
+        ffmpeg=FakeFfmpeg([]),  # type: ignore[arg-type]
+    )
+
+    result = pipeline.transcribe(source, dry_run=True, overwrite=False)
+
+    assert result.status == "planned"
+    assert result.source == source.resolve()
+    assert result.outputs.markdown.name == "town-hall_transcript.md"
+
+
 def test_transcribe_ensures_missing_model_before_audio_processing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
