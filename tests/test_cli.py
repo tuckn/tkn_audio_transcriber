@@ -31,11 +31,70 @@ def test_config_show_outputs_machine_readable_json(
     assert main(["config", "show"]) == 0
     captured = capsys.readouterr()  # type: ignore[attr-defined]
     payload = json.loads(captured.out)
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == "1.0.0"
+    assert payload["effective_schema_version"] == "1.0.0"
+    assert payload["has_in_memory_migrations"] is False
+    assert payload["config_sources"][0] == {
+        "kind": "built_in",
+        "path": None,
+        "exists": True,
+        "schema_version": "1.0.0",
+        "effective_schema_version": "1.0.0",
+        "migration": None,
+    }
     assert payload["values"]["model"]["value"] == "small"
     assert payload["values"]["output_dir"]["value"] == str(tmp_path.resolve())
     assert payload["values"]["output_dir"]["source"] == "built-in default"
     assert captured.err == ""
+
+
+def test_config_show_warns_for_legacy_integer_schema(
+    tmp_path: Path, monkeypatch: object, capsys: object
+) -> None:
+    isolated_home = tmp_path / "home"
+    isolated_home.mkdir()
+    config = tmp_path / "legacy.yaml"
+    config.write_text("schema_version: 1\nlanguage: en\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(isolated_home))  # type: ignore[attr-defined]
+    monkeypatch.setenv("USERPROFILE", str(isolated_home))  # type: ignore[attr-defined]
+    monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
+
+    assert main(["--config", str(config), "config", "show"]) == 0
+
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    payload = json.loads(captured.out)
+    assert payload["has_in_memory_migrations"] is True
+    assert payload["config_sources"][-1]["schema_version"] == 1
+    assert "[WARNING]" in captured.err
+    assert "config migrate" in captured.err
+
+
+def test_config_init_and_migrate_commands(
+    tmp_path: Path, monkeypatch: object, capsys: object
+) -> None:
+    isolated_home = tmp_path / "home"
+    isolated_home.mkdir()
+    target = tmp_path / "config.yaml"
+    monkeypatch.setenv("HOME", str(isolated_home))  # type: ignore[attr-defined]
+    monkeypatch.setenv("USERPROFILE", str(isolated_home))  # type: ignore[attr-defined]
+    monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
+
+    assert main(["config", "init", str(target)]) == 0
+    initialized = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
+    assert initialized["status"] == "created"
+    assert target.read_text(encoding="utf-8").startswith('schema_version: "1.0.0"')
+
+    target.write_text("schema_version: 1\nlanguage: en\n", encoding="utf-8")
+    assert main(["config", "migrate", str(target), "--dry-run"]) == 0
+    planned = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
+    assert planned["status"] == "planned"
+    assert target.read_text(encoding="utf-8").startswith("schema_version: 1\n")
+
+    assert main(["config", "migrate", str(target)]) == 0
+    migrated = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
+    assert migrated["status"] == "migrated"
+    assert target.read_text(encoding="utf-8").startswith('schema_version: "1.0.0"')
+    assert Path(migrated["backup_path"]).is_file()
 
 
 def test_transcribe_dry_run_defaults_output_to_current_working_directory(

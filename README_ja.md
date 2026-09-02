@@ -51,21 +51,36 @@ SHA-256を再確認します。会議メモの要約、用語補正、話者分�
 リポジトリのルートで実行します。
 
 ```console
-uv tool install -e .
+uv tool install .
 tkn-audio-transcriber --help
 tkn-audio-transcriber config show
 ```
 
-依存関係、package metadata、entry point、リポジトリの場所を変えた後は、
-`--force`付きで再インストールします。
+source code、package resource、依存関係、package metadata、entry pointを変更した後は、
+再インストールします。
 
 ```console
-uv tool install -e . --force
+uv tool install . --reinstall
 ```
 
 ## 初期設定
 
-`.tkn/config.example.yaml`を次のいずれかへコピーし、編集します。
+applicationに同梱されたexampleからユーザー設定を作成し、編集します。
+
+```console
+tkn-audio-transcriber config init
+```
+
+このcommandは`~/.tkn/audio_transcriber/config.yaml`を作成して絶対pathを表示します。
+既存内容がexampleと同じ場合は`unchanged`を返します。編集済み設定は`--force`なしでは
+上書きせず、強制置換時にはbackupを作成します。作業ディレクトリ固有のoverrideを
+作成する場合はpathを指定します。
+
+```console
+tkn-audio-transcriber config init .tkn/config.yaml
+```
+
+設定は次の場所から読み込めます。
 
 - ユーザー設定: `~/.tkn/audio_transcriber/config.yaml`
 - 作業ディレクトリ固有の上書き: `./.tkn/config.yaml`
@@ -74,7 +89,7 @@ uv tool install -e . --force
 working directoryへ出力します。明示すると次の設定と同じです。
 
 ```yaml
-schema_version: 1
+schema_version: "1.0.0"
 output_dir: .
 ```
 
@@ -117,14 +132,37 @@ tkn-audio-transcriber transcribe "C:\path\to\meeting.flac" --dry-run
 
 ## コマンド
 
+### `config init`
+
+application-ownedなpackage exampleから完全な設定を作成します。書き込まずに確認する場合は
+`--dry-run`、編集済みfileをbackupして置換する場合は`--force`を指定します。
+
+```console
+tkn-audio-transcriber config init --dry-run
+tkn-audio-transcriber config init
+```
+
 ### `config show`
 
-解決後の非secret設定と、各値がどのsourceから決まったかをJSONで表示します。
-読み取り専用であり、ディレクトリを作成しません。
+解決後の非secret設定、各値のsource、各設定sourceのschema version、effective schema
+version、in-memory migrationの有無をJSONで表示します。読み取り専用であり、
+ディレクトリを作成しません。
 
 ```console
 tkn-audio-transcriber config show
 tkn-audio-transcriber --config "C:\path\to\config.yaml" config show
+```
+
+### `config migrate`
+
+legacy設定1つを現在のschemaへ移行します。移行後の設定を検証し、元fileの隣にbackupを作って
+から原子的に置換します。`--dry-run`では書き込まずに計画を確認できます。pathを省略した
+場合はユーザー設定が対象です。
+
+```console
+tkn-audio-transcriber config migrate --dry-run
+tkn-audio-transcriber config migrate
+tkn-audio-transcriber config migrate .tkn/config.yaml
 ```
 
 ### `model download`
@@ -278,11 +316,21 @@ Windows console非対応時は無色です。
 5. 個別CLI option
 
 unknown key、不正な型、未対応`schema_version`はerrorです。`config show`で各値の
-採用sourceを確認できます。
+採用sourceと各sourceのschema状態を確認できます。各設定fileはmerge前に個別検証され、
+`schema_version`は上位sourceから上書きする設定値ではなくsource metadataとして扱われます。
+
+application-owned設定の独立したschema versionは`"1.0.0"`です。3要素の文字列を必須とします。
+現在のreaderはMajor 1かつMinor 0までを受け入れます。Patchは構造を変えない契約なので、
+`"1.0.7"`のような新しいPatchも読み込めます。新しいMinorまたはMajor、test済みmigrationの
+ない古いMajor、不正形式、version欠落は、必要なactionを示すerrorになります。
+
+従来の整数`schema_version: 1`はin-memory migrationで引き続き読み込めますが、warningを
+表示します。読込時にfileを暗黙更新しません。`config migrate`を実行すると、validation、
+backup、atomic replacementを行って`schema_version: "1.0.0"`を永続化します。
 
 ## 定期実行
 
-`uv tool install -e .`でinstallし、元メディアと出力に絶対pathを使えば、Windows Task
+`uv tool install .`でinstallし、元メディアと出力に絶対pathを使えば、Windows Task
 Schedulerまたはcronから同じ`transcribe`コマンドを実行できます。終了コードは、
 成功`0`、想定内の設定・入力・検証error`2`、中断`130`、想定外error`1`です。
 

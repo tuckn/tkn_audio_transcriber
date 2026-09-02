@@ -56,21 +56,37 @@ improves recognition at the cost of more memory and processing time.
 From the repository root:
 
 ```console
-uv tool install -e .
+uv tool install .
 tkn-audio-transcriber --help
 tkn-audio-transcriber config show
 ```
 
-Use `--force` after changing dependencies, package metadata, the entry point, or
-the repository location:
+Reinstall after changing source code, packaged resources, dependencies, package
+metadata, or the entry point:
 
 ```console
-uv tool install -e . --force
+uv tool install . --reinstall
 ```
 
 ## Initial configuration
 
-Copy `.tkn/config.example.yaml` to one of these locations and edit it:
+Create the user configuration from the example bundled with the application, then
+edit it:
+
+```console
+tkn-audio-transcriber config init
+```
+
+The command writes `~/.tkn/audio_transcriber/config.yaml`, reports its absolute
+path, and returns `unchanged` when its content already matches the example. It
+does not overwrite edited content unless `--force` is specified; forced replacement
+creates a backup. To create a working-directory override instead, pass its path:
+
+```console
+tkn-audio-transcriber config init .tkn/config.yaml
+```
+
+Configuration can be loaded from these locations:
 
 - user setting: `~/.tkn/audio_transcriber/config.yaml`
 - working-directory override: `./.tkn/config.yaml`
@@ -79,7 +95,7 @@ The real `./.tkn/config.yaml` is ignored by Git. Transcript outputs default to
 the current working directory. The equivalent explicit setting is:
 
 ```yaml
-schema_version: 1
+schema_version: "1.0.0"
 output_dir: .
 ```
 
@@ -126,14 +142,38 @@ tkn-audio-transcriber transcribe "C:\path\to\meeting.flac" --dry-run
 
 ## Commands
 
+### `config init`
+
+Creates a complete configuration from the application-owned packaged example.
+Use `--dry-run` to preview without writing, or `--force` to back up and replace an
+edited file.
+
+```console
+tkn-audio-transcriber config init --dry-run
+tkn-audio-transcriber config init
+```
+
 ### `config show`
 
-Prints resolved non-secret settings and the source of each value as JSON. It is
-read-only and does not create directories.
+Prints resolved non-secret settings, each value's source, every configuration
+source's schema version, the effective schema version, and any in-memory migration
+as JSON. It is read-only and does not create directories.
 
 ```console
 tkn-audio-transcriber config show
 tkn-audio-transcriber --config "C:\path\to\config.yaml" config show
+```
+
+### `config migrate`
+
+Migrates one legacy configuration to the current schema. The command validates the
+result, writes a backup beside the original, and replaces the original atomically.
+Preview the operation with `--dry-run`. Without a path it targets the user config.
+
+```console
+tkn-audio-transcriber config migrate --dry-run
+tkn-audio-transcriber config migrate
+tkn-audio-transcriber config migrate .tkn/config.yaml
 ```
 
 ### `model download`
@@ -293,11 +333,24 @@ Later sources override earlier sources:
 5. individual CLI options
 
 Unknown keys, invalid types, and unsupported `schema_version` values are errors.
-`config show` reports the source selected for every value.
+Every file is validated before merging, and `schema_version` is source metadata,
+not an overridable setting. `config show` reports the source selected for every
+value and the schema status of every source.
+
+Application-owned configuration uses the independent schema version `"1.0.0"`.
+The three-part string is required. This reader accepts versions in the current
+Major through Minor `0`, including newer Patch versions such as `"1.0.7"` because
+Patch changes do not alter structure. It rejects newer Minor or Major versions,
+older Major versions without a tested migration, malformed versions, and missing
+versions with an actionable error.
+
+The former integer `schema_version: 1` remains readable through an in-memory
+migration and emits a warning; reading never rewrites a file. Run `config migrate`
+to persist `schema_version: "1.0.0"` with validation, backup, and atomic replacement.
 
 ## Scheduled operation
 
-Install the CLI with `uv tool install -e .`, use absolute source-media/output paths,
+Install the CLI with `uv tool install .`, use absolute source-media/output paths,
 and run the same `transcribe` command from Windows Task Scheduler or cron. The
 command returns `0` on success, `2` for expected configuration/input/validation
 errors, `130` for interruption, and `1` for unexpected failures.

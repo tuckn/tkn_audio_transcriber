@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tkn-audio-transcriber"
-version = "0.2.1"
+version = "0.3.0"
 description = "A resumable local CLI for transcribing audio or video with ffmpeg and faster-whisper."
 readme = "README.md"
 license = { file = "LICENSE" }
