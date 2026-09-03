@@ -222,6 +222,7 @@ def _dry_run_plan(config: ResolvedConfig) -> dict[str, object]:
     provider = str(config.values["provider"])
     if provider == AZURE_PROVIDER:
         return {
+            "profile": config.active_profile,
             "provider": provider,
             "endpoint_type": endpoint_type(str(config.values["azure_speech_endpoint"])),
             "region": config.values["azure_speech_region"],
@@ -238,6 +239,7 @@ def _dry_run_plan(config: ResolvedConfig) -> dict[str, object]:
             },
         }
     return {
+        "profile": config.active_profile,
         "provider": provider,
         "endpoint_type": "local",
         "cloud_upload_approval_required": False,
@@ -247,6 +249,7 @@ def _dry_run_plan(config: ResolvedConfig) -> dict[str, object]:
 
 def _job_settings(config: ResolvedConfig) -> dict[str, object]:
     settings = dict(config.values)
+    settings["profile"] = config.active_profile
     if settings["provider"] == AZURE_PROVIDER:
         settings["azure_speech_endpoint"] = endpoint_type(
             str(settings["azure_speech_endpoint"])
@@ -290,7 +293,7 @@ class TranscriptionPipeline:
         state_dir = self.config.path("state_dir")
         if output_dir is None:
             raise ValidationError(
-                "output_dir is required. Set it in config or pass --output-dir."
+                "folders.output is required. Set it in config or pass --output-dir."
             )
         assert state_dir is not None
 

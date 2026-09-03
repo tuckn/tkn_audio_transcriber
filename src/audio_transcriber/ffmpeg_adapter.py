@@ -20,7 +20,7 @@ class FfmpegAdapter:
         if shutil.which(self.executable) is None:
             raise ExternalProcessError(
                 f"ffmpeg executable was not found: {self.executable}. "
-                "Install ffmpeg or set ffmpeg_executable."
+                "Install ffmpeg or set processing.ffmpeg.executable."
             )
 
     def _run(self, arguments: list[str]) -> None:
@@ -89,4 +89,3 @@ class FfmpegAdapter:
         if not chunks:
             raise ExternalProcessError(f"ffmpeg created no chunks in {chunk_dir}")
         return chunks
-

@@ -37,6 +37,10 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="Explicit YAML config (after user and working-directory config).",
     )
+    parser.add_argument(
+        "--profile",
+        help="Named transcription profile (overrides transcription.active_profile).",
+    )
     verbosity = parser.add_mutually_exclusive_group()
     verbosity.add_argument("-q", "--quiet", action="store_true", help="Show errors only.")
     verbosity.add_argument("-v", "--verbose", action="store_true", help="Show debug details.")
@@ -64,6 +68,9 @@ def _parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="Print the planned action without writing."
     )
     config_commands.add_parser("show", help="Print values and their source as JSON.")
+    config_commands.add_parser(
+        "profiles", help="List available transcription profiles and the active selection."
+    )
     config_migrate = config_commands.add_parser(
         "migrate", help="Migrate one config to the current schema with a backup."
     )
@@ -214,6 +221,7 @@ def _resolve(args: argparse.Namespace, overrides: dict[str, Any] | None = None) 
     return resolve_config(
         cwd=Path.cwd(),
         explicit_config=args.config,
+        profile=args.profile,
         cli_overrides=overrides,
     )
 
@@ -261,6 +269,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 config = _resolve(args)
                 _warn_in_memory_migrations(config, logger)
                 _json_result(config.display())
+                return 0
+            if args.config_command == "profiles":
+                config = _resolve(args)
+                _warn_in_memory_migrations(config, logger)
+                _json_result(config.profiles_display())
                 return 0
             if args.config_command == "migrate":
                 _json_result(migrate_config_file(_config_command_path(args), dry_run=args.dry_run))

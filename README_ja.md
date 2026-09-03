@@ -15,8 +15,9 @@ SHA-256を再確認します。会議メモの要約、用語補正、汎用生�
 
 文字起こしはスクリプトだけでは成立しません。スクリプトは音声変換、分割、再開、
 検証、出力を制御し、実際の「音声から文字」への変換には音声認識モデルが必要です。
-このCLIでは`provider`設定により、ローカルで動く`faster-whisper`（Whisper系ASR
-モデル）またはAzure Speech Fast Transcriptionを選択します。
+このCLIでは`transcription.active_profile`で名前付き設定を選び、そのprofileの
+`provider`により、ローカルで動く`faster-whisper`（Whisper系ASRモデル）または
+Azure Speech Fast Transcriptionを選択します。
 
 ローカルproviderは、モデル取得後に音声をuploadしません。Azure providerは、commandに
 `--allow-cloud-upload`を指定したときだけ、派生したモノラル16 kHz WAVを1つuploadします。
@@ -38,7 +39,7 @@ SHA-256を再確認します。会議メモの要約、用語補正、汎用生�
 - Windows 10/11 または Linux
 - Python 3.12以上
 - [`uv`](https://docs.astral.sh/uv/)
-- `PATH`から実行できる`ffmpeg`、または設定した`ffmpeg_executable`
+- `PATH`から実行できる`ffmpeg`、または設定した`processing.ffmpeg.executable`
 - モノラル16 kHz WAVと、ローカルproviderでは分割チャンクを保存できる空き容量
 - Azureでは、Speech User roleを持つEntra identityと設定済みSpeech endpointへの接続
 
@@ -92,8 +93,28 @@ tkn-audio-transcriber config init .tkn/config.yaml
 working directoryへ出力します。明示すると次の設定と同じです。
 
 ```yaml
-schema_version: "1.1.0"
-output_dir: .
+schema_version: "2.0.0"
+folders:
+  output: .
+```
+
+設定は役割別に分かれています。
+
+- `transcription`: 名前付きのlocal/cloud文字起こしprofile
+- `folders`: output、local model、download cache、durable stateの保存先
+- `processing`: `ffmpeg`、heartbeat、working file保持の動作
+
+同梱exampleには`local-small`、`local-large`、`azure-ja`があります。通常利用する
+profileはYAMLで選び、一時的な切り替えには`--profile`を使います。
+
+```yaml
+transcription:
+  active_profile: local-small
+```
+
+```console
+tkn-audio-transcriber config profiles
+tkn-audio-transcriber --profile local-large transcribe "C:\path\to\meeting.flac"
 ```
 
 初回文字起こし時に既知のモデルがなければ、Hugging Faceから自動ダウンロードします。
@@ -140,31 +161,41 @@ commitするexampleではplaceholderを使ってください。次は対応す�
 placeholderだけを自分のresource endpointへ置換します。
 
 ```yaml
-schema_version: "1.1.0"
-provider: azure-speech-fast
-azure_speech_endpoint: https://<speech-resource-name>.cognitiveservices.azure.com/
-azure_speech_region: japaneast
-azure_speech_api_version: "2025-10-15"
-azure_speech_locale: ja-JP
-azure_speech_diarization_enabled: true
-azure_speech_max_speakers: 8
-azure_speech_timeout_seconds: 600
-azure_speech_max_retries: 3
+schema_version: "2.0.0"
+transcription:
+  active_profile: azure-ja
+  profiles:
+    azure-ja:
+      provider: azure-speech-fast
+      endpoint: https://<speech-resource-name>.cognitiveservices.azure.com/
+      region: japaneast
+      api_version: "2025-10-15"
+      locale: ja-JP
+      diarization:
+        enabled: true
+        max_speakers: 8
+      request:
+        timeout_seconds: 600
+        max_retries: 3
 ```
+
+Azure Speech Fast Transcriptionには、Whisperのようなmodel名の選択設定がありません。
+そのためAzure profileには`model`を置かず、endpoint、locale、話者分離、request動作を
+まとめています。
 
 previewは完全にlocalです。credential作成、token取得、Azure API、model download、
 `ffmpeg`を呼び出さず、output、state、cache、report、temporary fileも作成しません。
 予定provider、endpoint種別、region、API version、locale、cloud承認の要否を表示します。
 
 ```powershell
-tkn-audio-transcriber --config "C:\path\to\azure.yaml" transcribe `
+tkn-audio-transcriber --profile azure-ja transcribe `
   "C:\path\to\meeting.mp4" --dry-run
 ```
 
 Azureの実行にはYAMLへ保存できない実行単位の承認flagが必要です。
 
 ```powershell
-tkn-audio-transcriber --config "C:\path\to\azure.yaml" transcribe `
+tkn-audio-transcriber --profile azure-ja transcribe `
   "C:\path\to\meeting.mp4" --allow-cloud-upload
 ```
 
@@ -206,13 +237,24 @@ version、in-memory migrationの有無をJSONで表示します。読み取り�
 ```console
 tkn-audio-transcriber config show
 tkn-audio-transcriber --config "C:\path\to\config.yaml" config show
+tkn-audio-transcriber --profile local-large config show
+```
+
+### `config profiles`
+
+名前付き文字起こしprofile、各provider、activeな選択を一覧表示します。読み取り専用です。
+YAMLを編集せずに別profileを確認するときは、global `--profile`を使います。
+
+```console
+tkn-audio-transcriber config profiles
+tkn-audio-transcriber --profile local-large config profiles
 ```
 
 ### `config migrate`
 
-legacy設定1つを現在のschemaへ移行します。移行後の設定を検証し、元fileの隣にbackupを作って
-から原子的に置換します。`--dry-run`では書き込まずに計画を確認できます。pathを省略した
-場合はユーザー設定が対象です。
+平坦なschema 1.x設定をschema 2のprofile階層へ移行します。移行後の設定を検証し、
+元fileの隣にbackupを作ってから原子的に置換します。`--dry-run`では書き込まずに
+計画を確認できます。pathを省略した場合はユーザー設定が対象です。
 
 ```console
 tkn-audio-transcriber config migrate --dry-run
@@ -264,10 +306,10 @@ tkn-audio-transcriber transcribe "C:\path\to\town-hall.mp4" `
   監査・再開用checkpointは常に保持する
 - `--allow-cloud-upload`: この実行だけAzure uploadを承認する。設定fileからは読まない
 
-`provider: faster-whisper`で設定した既知モデル（`tiny`、`base`、`small`、`medium`、
-`large-v3`）がなければ、
-音声処理前に自動ダウンロードします。`--dry-run`ではダウンロードしません。中断した
-場合は同じ`transcribe`コマンドを再実行すると、完了済みチャンクを飛ばして再開します。
+選択profileの`provider`が`faster-whisper`の場合、設定した既知model（`tiny`、`base`、
+`small`、`medium`、`large-v3`）がなければ、音声処理前に自動ダウンロードします。
+`--dry-run`ではダウンロードしません。中断した場合は同じ`transcribe`コマンドを
+再実行すると、完了済みチャンクを飛ばして再開します。
 
 開始前にscratch容量を概算し、正規化後は実際のWAV容量からチャンク作成分を再確認します。
 正規化WAVの形式・再生時間と全チャンクの合計時間が一致しない場合、または最終segmentが
@@ -373,20 +415,23 @@ Windows console非対応時は無色です。
 2. `~/.tkn/audio_transcriber/config.yaml`
 3. `./.tkn/config.yaml`
 4. 明示した`--config`
-5. 個別CLI option
+5. 設定済み`transcription.active_profile`またはglobal `--profile`
+6. 個別CLI option
 
-unknown key、不正な型、未対応`schema_version`はerrorです。`config show`で各値の
-採用sourceと各sourceのschema状態を確認できます。各設定fileはmerge前に個別検証され、
-`schema_version`は上位sourceから上書きする設定値ではなくsource metadataとして扱われます。
+unknown key、不正type、未対応`schema_version`はerrorです。各設定fileをmerge前に検証し、
+階層設定をdeep mergeします。`schema_version`は上位sourceから上書きする設定値ではなく
+source metadataとして扱います。`config show`では選択profile、利用可能profile、
+各effective値のsource、各設定sourceのschema状態を確認できます。
 
-application-owned設定の独立したschema versionは`"1.1.0"`です。3要素の文字列を必須とします。
-現在のreaderはMajor 1かつMinor 1までを受け入れます。Patchは構造を変えない契約なので、
-`"1.1.7"`のような新しいPatchも読み込めます。新しいMinorまたはMajor、test済みmigrationの
-ない古いMajor、不正形式、version欠落は、必要なactionを示すerrorになります。
+application-owned設定の独立したschema versionは`"2.0.0"`です。3要素のstringを必須と
+します。構造を変えないschema 2の新しいPatch（例: `"2.0.7"`）も受け付けます。
+新しいMinor/Major、検証済み移行がない古いversion、不正形式、version欠落は、必要な
+actionを示すerrorになります。
 
-`1.0.x`と従来の整数`schema_version: 1`はin-memory migrationで引き続き読み込めますが、warningを
-表示します。読込時にfileを暗黙更新しません。`config migrate`を実行すると、validation、
-backup、atomic replacementを行って`schema_version: "1.1.0"`を永続化します。
+平坦な`1.0.x`、`1.1.x`、旧integer `schema_version: 1`はin-memoryでprofile階層へ
+変換して読み取り、warningを表示します。読み取りだけではfileを書き換えません。
+`config migrate`を実行すると、validation、backup、atomic replacementを経て、名前付き
+profileを持つschema `"2.0.0"`を永続化します。
 
 ## 定期実行
 

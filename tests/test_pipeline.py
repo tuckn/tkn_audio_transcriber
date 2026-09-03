@@ -340,6 +340,7 @@ def test_azure_dry_run_never_creates_clients_or_writes(tmp_path: Path) -> None:
 
     assert result.status == "planned"
     assert result.plan == {
+        "profile": "local-small",
         "provider": "azure-speech-fast",
         "endpoint_type": "azure-custom-subdomain",
         "region": "japaneast",

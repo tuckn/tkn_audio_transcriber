@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tkn-audio-transcriber"
-version = "0.4.0"
+version = "0.5.0"
 description = "A resumable CLI for local or Azure Speech transcription of audio and video."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -31,9 +31,6 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/audio_transcriber"]
-
-[tool.hatch.build]
-exclude = ["src/audio_transcriber/resources/config.example.yaml"]
 
 [tool.pytest.ini_options]
 addopts = "-q"

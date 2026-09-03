@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import shutil
+from copy import deepcopy
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
@@ -14,17 +15,19 @@ from .errors import ConfigError
 from .io_utils import atomic_write_text
 
 APPLICATION_ID = "audio_transcriber"
-SCHEMA_VERSION = "1.1.0"
-_SCHEMA_VERSION_PARTS = (1, 1, 0)
+SCHEMA_VERSION = "2.0.0"
+_SCHEMA_VERSION_PARTS = (2, 0, 0)
 _SCHEMA_VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
-_SCHEMA_VERSION_LINE_PATTERN = re.compile(
-    r"^(?P<prefix>schema_version\s*:\s*)(?P<value>[^#\r\n]*?)(?P<suffix>\s*(?:#.*)?)$",
-    re.MULTILINE,
-)
 CONFIG_EXAMPLE_RESOURCE = "config.example.yaml"
 
+LOCAL_PROVIDER = "faster-whisper"
+AZURE_PROVIDER = "azure-speech-fast"
+PROVIDERS = {LOCAL_PROVIDER, AZURE_PROVIDER}
+
+# The processing pipeline continues to consume this normalized representation.
+# YAML schema details are kept at the configuration boundary below.
 DEFAULTS: dict[str, Any] = {
-    "provider": "faster-whisper",
+    "provider": LOCAL_PROVIDER,
     "model": "small",
     "language": "ja",
     "chunk_seconds": 600,
@@ -87,6 +90,122 @@ AZURE_SETTING_KEYS = {
     "azure_speech_max_retries",
 }
 
+LOCAL_PROFILE_DEFAULTS: dict[str, Any] = {
+    "provider": LOCAL_PROVIDER,
+    "model": "small",
+    "language": "ja",
+    "chunk_seconds": 600,
+    "beam_size": 1,
+    "compute_type": "int8",
+    "device": "cpu",
+}
+AZURE_PROFILE_DEFAULTS: dict[str, Any] = {
+    "provider": AZURE_PROVIDER,
+    "endpoint": None,
+    "region": "japaneast",
+    "api_version": "2025-10-15",
+    "locale": "ja-JP",
+    "diarization": {"enabled": True, "max_speakers": 8},
+    "request": {"timeout_seconds": 600, "max_retries": 3},
+}
+PROFILE_DEFAULTS = {
+    LOCAL_PROVIDER: LOCAL_PROFILE_DEFAULTS,
+    AZURE_PROVIDER: AZURE_PROFILE_DEFAULTS,
+}
+
+BUILT_IN_CONFIG: dict[str, Any] = {
+    "transcription": {
+        "active_profile": "local-small",
+        "profiles": {
+            "local-small": deepcopy(LOCAL_PROFILE_DEFAULTS),
+            "local-large": {**deepcopy(LOCAL_PROFILE_DEFAULTS), "model": "large-v3"},
+            "azure-ja": deepcopy(AZURE_PROFILE_DEFAULTS),
+        },
+    },
+    "folders": {
+        "output": ".",
+        "local_models": "~/.cache/audio_transcriber/models",
+        "huggingface_cache": "~/.cache/audio_transcriber/huggingface",
+        "state": "~/.tkn/audio_transcriber/state",
+    },
+    "processing": {
+        "ffmpeg": {"executable": "ffmpeg", "timeout_seconds": 3600},
+        "heartbeat_seconds": 60,
+        "keep_working_files": False,
+    },
+}
+
+TOP_LEVEL_KEYS = {"transcription", "folders", "processing"}
+TRANSCRIPTION_KEYS = {"active_profile", "profiles"}
+LOCAL_PROFILE_KEYS = set(LOCAL_PROFILE_DEFAULTS)
+AZURE_PROFILE_KEYS = {
+    "provider",
+    "endpoint",
+    "region",
+    "api_version",
+    "locale",
+    "diarization",
+    "request",
+}
+ALL_PROFILE_KEYS = LOCAL_PROFILE_KEYS | AZURE_PROFILE_KEYS
+FOLDER_KEYS = {"output", "local_models", "huggingface_cache", "state"}
+PROCESSING_KEYS = {"ffmpeg", "heartbeat_seconds", "keep_working_files"}
+FFMPEG_KEYS = {"executable", "timeout_seconds"}
+DIARIZATION_KEYS = {"enabled", "max_speakers"}
+REQUEST_KEYS = {"timeout_seconds", "max_retries"}
+
+FOLDER_TO_FLAT = {
+    "output": "output_dir",
+    "local_models": "model_dir",
+    "huggingface_cache": "cache_dir",
+    "state": "state_dir",
+}
+PROCESSING_TO_FLAT = {
+    ("ffmpeg", "executable"): "ffmpeg_executable",
+    ("ffmpeg", "timeout_seconds"): "subprocess_timeout_seconds",
+    ("heartbeat_seconds",): "heartbeat_seconds",
+    ("keep_working_files",): "keep_working_files",
+}
+LOCAL_PROFILE_TO_FLAT = {
+    "model": "model",
+    "language": "language",
+    "chunk_seconds": "chunk_seconds",
+    "beam_size": "beam_size",
+    "compute_type": "compute_type",
+    "device": "device",
+}
+AZURE_PROFILE_TO_FLAT = {
+    ("endpoint",): "azure_speech_endpoint",
+    ("region",): "azure_speech_region",
+    ("api_version",): "azure_speech_api_version",
+    ("locale",): "azure_speech_locale",
+    ("diarization", "enabled"): "azure_speech_diarization_enabled",
+    ("diarization", "max_speakers"): "azure_speech_max_speakers",
+    ("request", "timeout_seconds"): "azure_speech_timeout_seconds",
+    ("request", "max_retries"): "azure_speech_max_retries",
+}
+
+LEGACY_LOCAL_TO_PROFILE = {
+    "model": ("model",),
+    "language": ("language",),
+    "chunk_seconds": ("chunk_seconds",),
+    "beam_size": ("beam_size",),
+    "compute_type": ("compute_type",),
+    "device": ("device",),
+}
+LEGACY_AZURE_TO_PROFILE = {
+    "azure_speech_endpoint": ("endpoint",),
+    "azure_speech_region": ("region",),
+    "azure_speech_api_version": ("api_version",),
+    "azure_speech_locale": ("locale",),
+    "azure_speech_diarization_enabled": ("diarization", "enabled"),
+    "azure_speech_max_speakers": ("diarization", "max_speakers"),
+    "azure_speech_timeout_seconds": ("request", "timeout_seconds"),
+    "azure_speech_max_retries": ("request", "max_retries"),
+}
+LEGACY_FOLDER_TO_V2 = {value: key for key, value in FOLDER_TO_FLAT.items()}
+LEGACY_PROCESSING_TO_V2 = {value: key for key, value in PROCESSING_TO_FLAT.items()}
+
 
 @dataclass(frozen=True)
 class ResolvedConfig:
@@ -94,6 +213,9 @@ class ResolvedConfig:
     sources: dict[str, str]
     loaded_files: tuple[Path, ...]
     config_sources: tuple[dict[str, Any], ...]
+    active_profile: str
+    active_profile_source: str
+    profiles: tuple[dict[str, Any], ...]
     effective_schema_version: str = SCHEMA_VERSION
 
     @property
@@ -104,11 +226,21 @@ class ResolvedConfig:
         value = self.values[key]
         return None if value is None else Path(str(value))
 
+    def profiles_display(self) -> dict[str, Any]:
+        return {
+            "active_profile": self.active_profile,
+            "active_profile_source": self.active_profile_source,
+            "profiles": [dict(profile) for profile in self.profiles],
+        }
+
     def display(self) -> dict[str, Any]:
         return {
             "schema_version": SCHEMA_VERSION,
             "effective_schema_version": self.effective_schema_version,
             "has_in_memory_migrations": self.has_in_memory_migrations,
+            "active_profile": self.active_profile,
+            "active_profile_source": self.active_profile_source,
+            "profiles": [dict(profile) for profile in self.profiles],
             "config_sources": [dict(source) for source in self.config_sources],
             "values": {
                 key: {"value": value, "source": self.sources[key]}
@@ -147,18 +279,17 @@ def _inspect_schema_version(value: dict[str, Any], path: Path) -> dict[str, Any]
         )
 
     raw_version = value["schema_version"]
-    if type(raw_version) is int and raw_version == _SCHEMA_VERSION_PARTS[0]:
+    if type(raw_version) is int and raw_version == 1:
         return {
             "schema_version": raw_version,
             "effective_schema_version": SCHEMA_VERSION,
             "migration": {
-                "kind": "legacy_integer_version",
+                "kind": "legacy_flat_to_profiles",
                 "from_version": raw_version,
                 "to_version": SCHEMA_VERSION,
                 "persistent_config_updated": False,
             },
         }
-
     if not isinstance(raw_version, str) or not _SCHEMA_VERSION_PATTERN.fullmatch(raw_version):
         raise ConfigError(
             f"Invalid schema_version {raw_version!r} in {path}; expected a quoted "
@@ -167,6 +298,22 @@ def _inspect_schema_version(value: dict[str, Any], path: Path) -> dict[str, Any]
 
     major, minor, _patch = (int(part) for part in raw_version.split("."))
     current_major, current_minor, _current_patch = _SCHEMA_VERSION_PARTS
+    if major == 1:
+        if minor > 1:
+            raise ConfigError(
+                f"Unsupported legacy schema_version {raw_version!r} in {path}; "
+                "upgrade the application that created it or convert it manually"
+            )
+        return {
+            "schema_version": raw_version,
+            "effective_schema_version": SCHEMA_VERSION,
+            "migration": {
+                "kind": "legacy_flat_to_profiles",
+                "from_version": raw_version,
+                "to_version": SCHEMA_VERSION,
+                "persistent_config_updated": False,
+            },
+        }
     if major != current_major:
         direction = "newer" if major > current_major else "older"
         action = (
@@ -185,24 +332,168 @@ def _inspect_schema_version(value: dict[str, Any], path: Path) -> dict[str, Any]
             f"application supports versions through {SCHEMA_VERSION}; upgrade "
             "tkn-audio-transcriber"
         )
-
-    migration: dict[str, Any] | None = None
-    if minor < current_minor:
-        migration = {
-            "kind": "compatible_version_normalization",
-            "from_version": raw_version,
-            "to_version": SCHEMA_VERSION,
-            "persistent_config_updated": False,
-        }
     return {
         "schema_version": raw_version,
         "effective_schema_version": SCHEMA_VERSION,
-        "migration": migration,
+        "migration": None,
     }
 
 
-def _validate(values: dict[str, Any], *, require_provider_settings: bool = False) -> None:
-    azure_active = values.get("provider") == "azure-speech-fast"
+def _is_legacy_schema(raw_version: object) -> bool:
+    return raw_version == 1 or (
+        isinstance(raw_version, str)
+        and _SCHEMA_VERSION_PATTERN.fullmatch(raw_version) is not None
+        and raw_version.split(".", maxsplit=1)[0] == "1"
+    )
+
+
+def _mapping(value: Any, label: str, path: Path) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ConfigError(f"{label} must be a mapping in {path}")
+    return dict(value)
+
+
+def _reject_unknown(
+    value: dict[str, Any], allowed: set[str], label: str, path: Path
+) -> None:
+    unknown = sorted(str(key) for key in set(value) - allowed)
+    if unknown:
+        raise ConfigError(f"Unknown config key(s) in {path} at {label}: {', '.join(unknown)}")
+
+
+def _require_type(
+    value: Any,
+    expected: type[Any] | tuple[type[Any], ...],
+    label: str,
+    path: Path,
+) -> None:
+    if isinstance(value, bool) and expected is int:
+        raise ConfigError(f"{label} must be an integer, not a boolean in {path}")
+    if not isinstance(value, expected):
+        raise ConfigError(f"{label} has invalid type {type(value).__name__} in {path}")
+
+
+def _positive_integer(value: Any, label: str, path: Path, *, allow_zero: bool = False) -> None:
+    _require_type(value, int, label, path)
+    minimum = 0 if allow_zero else 1
+    if value < minimum:
+        suffix = "zero or greater" if allow_zero else "greater than zero"
+        raise ConfigError(f"{label} must be {suffix} in {path}")
+
+
+def _validate_profile_layer(profile: dict[str, Any], label: str, path: Path) -> None:
+    _reject_unknown(profile, ALL_PROFILE_KEYS, label, path)
+    if "provider" in profile:
+        _require_type(profile["provider"], str, f"{label}.provider", path)
+        if profile["provider"] not in PROVIDERS:
+            raise ConfigError(
+                f"{label}.provider must be either {LOCAL_PROVIDER!r} or "
+                f"{AZURE_PROVIDER!r} in {path}"
+            )
+    for key in (
+        "model",
+        "language",
+        "compute_type",
+        "device",
+        "region",
+        "api_version",
+        "locale",
+    ):
+        if key in profile:
+            _require_type(profile[key], str, f"{label}.{key}", path)
+            if not profile[key].strip():
+                raise ConfigError(f"{label}.{key} must not be empty in {path}")
+    for key in ("chunk_seconds", "beam_size"):
+        if key in profile:
+            _positive_integer(profile[key], f"{label}.{key}", path)
+    if "endpoint" in profile:
+        _require_type(profile["endpoint"], (str, type(None)), f"{label}.endpoint", path)
+    if "diarization" in profile:
+        diarization = _mapping(profile["diarization"], f"{label}.diarization", path)
+        _reject_unknown(diarization, DIARIZATION_KEYS, f"{label}.diarization", path)
+        if "enabled" in diarization:
+            _require_type(diarization["enabled"], bool, f"{label}.diarization.enabled", path)
+        if "max_speakers" in diarization:
+            _positive_integer(
+                diarization["max_speakers"], f"{label}.diarization.max_speakers", path
+            )
+            if not 2 <= diarization["max_speakers"] <= 35:
+                raise ConfigError(
+                    f"{label}.diarization.max_speakers must be between 2 and 35 in {path}"
+                )
+    if "request" in profile:
+        request = _mapping(profile["request"], f"{label}.request", path)
+        _reject_unknown(request, REQUEST_KEYS, f"{label}.request", path)
+        if "timeout_seconds" in request:
+            _positive_integer(request["timeout_seconds"], f"{label}.request.timeout_seconds", path)
+        if "max_retries" in request:
+            _positive_integer(
+                request["max_retries"],
+                f"{label}.request.max_retries",
+                path,
+                allow_zero=True,
+            )
+
+
+def _validate_v2_layer(value: dict[str, Any], path: Path) -> None:
+    _reject_unknown(value, TOP_LEVEL_KEYS, "root", path)
+    if "transcription" in value:
+        transcription = _mapping(value["transcription"], "transcription", path)
+        _reject_unknown(transcription, TRANSCRIPTION_KEYS, "transcription", path)
+        if "active_profile" in transcription:
+            _require_type(
+                transcription["active_profile"],
+                str,
+                "transcription.active_profile",
+                path,
+            )
+            if not transcription["active_profile"].strip():
+                raise ConfigError(f"transcription.active_profile must not be empty in {path}")
+        if "profiles" in transcription:
+            profiles = _mapping(transcription["profiles"], "transcription.profiles", path)
+            for raw_name, raw_profile in profiles.items():
+                if not isinstance(raw_name, str) or not raw_name.strip():
+                    raise ConfigError(
+                        f"transcription profile names must be non-empty strings in {path}"
+                    )
+                profile = _mapping(raw_profile, f"transcription.profiles.{raw_name}", path)
+                _validate_profile_layer(profile, f"transcription.profiles.{raw_name}", path)
+    if "folders" in value:
+        folders = _mapping(value["folders"], "folders", path)
+        _reject_unknown(folders, FOLDER_KEYS, "folders", path)
+        for key, item in folders.items():
+            expected: type[Any] | tuple[type[Any], ...] = (
+                (str, type(None)) if key == "output" else str
+            )
+            _require_type(item, expected, f"folders.{key}", path)
+    if "processing" in value:
+        processing = _mapping(value["processing"], "processing", path)
+        _reject_unknown(processing, PROCESSING_KEYS, "processing", path)
+        if "ffmpeg" in processing:
+            ffmpeg = _mapping(processing["ffmpeg"], "processing.ffmpeg", path)
+            _reject_unknown(ffmpeg, FFMPEG_KEYS, "processing.ffmpeg", path)
+            if "executable" in ffmpeg:
+                _require_type(ffmpeg["executable"], str, "processing.ffmpeg.executable", path)
+                if not ffmpeg["executable"].strip():
+                    raise ConfigError(f"processing.ffmpeg.executable must not be empty in {path}")
+            if "timeout_seconds" in ffmpeg:
+                _positive_integer(
+                    ffmpeg["timeout_seconds"], "processing.ffmpeg.timeout_seconds", path
+                )
+        if "heartbeat_seconds" in processing:
+            _positive_integer(
+                processing["heartbeat_seconds"], "processing.heartbeat_seconds", path
+            )
+        if "keep_working_files" in processing:
+            _require_type(
+                processing["keep_working_files"], bool, "processing.keep_working_files", path
+            )
+
+
+def _validate_flat_values(
+    values: dict[str, Any], *, require_provider_settings: bool = False
+) -> None:
+    azure_active = values.get("provider") == AZURE_PROVIDER
     for key, value in values.items():
         if key in AZURE_SETTING_KEYS and not azure_active:
             continue
@@ -220,19 +511,11 @@ def _validate(values: dict[str, Any], *, require_provider_settings: bool = False
         "heartbeat_seconds",
         "azure_speech_timeout_seconds",
     ):
-        if key in values and (key not in AZURE_SETTING_KEYS or azure_active) and values[key] <= 0:
+        if (key not in AZURE_SETTING_KEYS or azure_active) and values[key] <= 0:
             raise ConfigError(f"{key} must be greater than zero")
-    if (
-        azure_active
-        and "azure_speech_max_retries" in values
-        and values["azure_speech_max_retries"] < 0
-    ):
+    if azure_active and values["azure_speech_max_retries"] < 0:
         raise ConfigError("azure_speech_max_retries must be zero or greater")
-    if (
-        azure_active
-        and "azure_speech_max_speakers" in values
-        and not 2 <= values["azure_speech_max_speakers"] <= 35
-    ):
+    if azure_active and not 2 <= values["azure_speech_max_speakers"] <= 35:
         raise ConfigError("azure_speech_max_speakers must be between 2 and 35")
     for key in (
         "provider",
@@ -245,19 +528,14 @@ def _validate(values: dict[str, Any], *, require_provider_settings: bool = False
         "azure_speech_api_version",
         "azure_speech_locale",
     ):
-        if key in values and (key not in AZURE_SETTING_KEYS or azure_active) and not values[
-            key
-        ].strip():
+        if (key not in AZURE_SETTING_KEYS or azure_active) and not values[key].strip():
             raise ConfigError(f"{key} must not be empty")
-    if "provider" in values and values["provider"] not in {
-        "faster-whisper",
-        "azure-speech-fast",
-    }:
+    if values["provider"] not in PROVIDERS:
         raise ConfigError(
-            "provider must be either 'faster-whisper' or 'azure-speech-fast'"
+            f"provider must be either {LOCAL_PROVIDER!r} or {AZURE_PROVIDER!r}"
         )
-    if require_provider_settings and values.get("provider") == "azure-speech-fast":
-        endpoint = values.get("azure_speech_endpoint")
+    if require_provider_settings and azure_active:
+        endpoint = values["azure_speech_endpoint"]
         if not isinstance(endpoint, str) or not endpoint.strip():
             raise ConfigError(
                 "azure_speech_endpoint is required when provider is azure-speech-fast"
@@ -280,19 +558,223 @@ def _validate(values: dict[str, Any], *, require_provider_settings: bool = False
             )
 
 
-def _load_yaml(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+def _load_yaml(path: Path) -> tuple[dict[str, Any], dict[str, Any], bool]:
     _text, loaded = _read_yaml(path)
     schema_report = _inspect_schema_version(loaded, path)
     result = dict(loaded)
-    result.pop("schema_version")
-    unknown = sorted(set(result) - set(DEFAULTS))
-    if unknown:
-        raise ConfigError(f"Unknown config key(s) in {path}: {', '.join(unknown)}")
-    try:
-        _validate(result)
-    except ConfigError as exc:
-        raise ConfigError(f"Invalid config file {path}: {exc}") from exc
-    return result, schema_report
+    raw_version = result.pop("schema_version")
+    legacy = _is_legacy_schema(raw_version)
+    if legacy:
+        unknown = sorted(set(result) - set(DEFAULTS))
+        if unknown:
+            raise ConfigError(f"Unknown config key(s) in {path}: {', '.join(unknown)}")
+        candidate = dict(DEFAULTS)
+        candidate.update(result)
+        try:
+            _validate_flat_values(candidate)
+        except ConfigError as exc:
+            raise ConfigError(f"Invalid config file {path}: {exc}") from exc
+    else:
+        try:
+            _validate_v2_layer(result, path)
+        except ConfigError as exc:
+            raise ConfigError(f"Invalid config file {path}: {exc}") from exc
+    return result, schema_report, legacy
+
+
+def _record_sources(
+    value: Any,
+    sources: dict[tuple[str, ...], str],
+    label: str,
+    prefix: tuple[str, ...] = (),
+) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            _record_sources(child, sources, label, (*prefix, str(key)))
+    else:
+        sources[prefix] = label
+
+
+def _merge_config(
+    target: dict[str, Any],
+    layer: dict[str, Any],
+    sources: dict[tuple[str, ...], str],
+    label: str,
+    prefix: tuple[str, ...] = (),
+) -> None:
+    for key, value in layer.items():
+        key_path = (*prefix, str(key))
+        if isinstance(value, dict):
+            existing = target.get(key)
+            if not isinstance(existing, dict):
+                existing = {}
+                target[key] = existing
+            _merge_config(existing, value, sources, label, key_path)
+        else:
+            target[key] = deepcopy(value)
+            sources[key_path] = label
+
+
+def _set_nested(target: dict[str, Any], keys: tuple[str, ...], value: Any) -> None:
+    cursor = target
+    for key in keys[:-1]:
+        child = cursor.setdefault(key, {})
+        assert isinstance(child, dict)
+        cursor = child
+    cursor[keys[-1]] = value
+
+
+def _profile_name_for_provider(config: dict[str, Any], provider: str) -> str:
+    transcription = config["transcription"]
+    active = str(transcription["active_profile"])
+    profiles = transcription["profiles"]
+    active_profile = profiles.get(active)
+    if isinstance(active_profile, dict) and active_profile.get("provider") == provider:
+        return active
+    preferred = "local-small" if provider == LOCAL_PROVIDER else "azure-ja"
+    if preferred in profiles:
+        return preferred
+    for name, profile in profiles.items():
+        if isinstance(profile, dict) and profile.get("provider") == provider:
+            return str(name)
+    return "local" if provider == LOCAL_PROVIDER else "azure"
+
+
+def _apply_legacy_layer(
+    config: dict[str, Any],
+    legacy: dict[str, Any],
+    sources: dict[tuple[str, ...], str],
+    label: str,
+) -> None:
+    local_name = _profile_name_for_provider(config, LOCAL_PROVIDER)
+    azure_name = _profile_name_for_provider(config, AZURE_PROVIDER)
+    layer: dict[str, Any] = {}
+
+    if "provider" in legacy:
+        selected_provider = str(legacy["provider"])
+        selected_name = local_name if selected_provider == LOCAL_PROVIDER else azure_name
+        _set_nested(layer, ("transcription", "active_profile"), selected_name)
+    if any(key in legacy for key in LEGACY_LOCAL_TO_PROFILE):
+        _set_nested(
+            layer,
+            ("transcription", "profiles", local_name, "provider"),
+            LOCAL_PROVIDER,
+        )
+        for old_key, new_path in LEGACY_LOCAL_TO_PROFILE.items():
+            if old_key in legacy:
+                _set_nested(
+                    layer,
+                    ("transcription", "profiles", local_name, *new_path),
+                    legacy[old_key],
+                )
+    if any(key in legacy for key in LEGACY_AZURE_TO_PROFILE):
+        _set_nested(
+            layer,
+            ("transcription", "profiles", azure_name, "provider"),
+            AZURE_PROVIDER,
+        )
+        for old_key, azure_path in LEGACY_AZURE_TO_PROFILE.items():
+            if old_key in legacy:
+                _set_nested(
+                    layer,
+                    ("transcription", "profiles", azure_name, *azure_path),
+                    legacy[old_key],
+                )
+    for old_key, new_key in LEGACY_FOLDER_TO_V2.items():
+        if old_key in legacy:
+            _set_nested(layer, ("folders", new_key), legacy[old_key])
+    for old_key, processing_path in LEGACY_PROCESSING_TO_V2.items():
+        if old_key in legacy:
+            _set_nested(layer, ("processing", *processing_path), legacy[old_key])
+    _merge_config(config, layer, sources, label)
+
+
+def _effective_profile(profile: dict[str, Any], path: Path, name: str) -> dict[str, Any]:
+    provider = profile.get("provider")
+    if not isinstance(provider, str) or provider not in PROVIDERS:
+        raise ConfigError(
+            f"transcription.profiles.{name}.provider is required and must be a "
+            f"supported provider in {path}"
+        )
+    allowed = LOCAL_PROFILE_KEYS if provider == LOCAL_PROVIDER else AZURE_PROFILE_KEYS
+    _reject_unknown(profile, allowed, f"transcription.profiles.{name}", path)
+    effective = deepcopy(PROFILE_DEFAULTS[provider])
+    throwaway_sources: dict[tuple[str, ...], str] = {}
+    _merge_config(effective, profile, throwaway_sources, "profile")
+    _validate_profile_layer(effective, f"transcription.profiles.{name}", path)
+    return effective
+
+
+def _get_nested(value: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    cursor: Any = value
+    for key in keys:
+        cursor = cursor[key]
+    return cursor
+
+
+def _normalized_values(
+    config: dict[str, Any],
+    source_paths: dict[tuple[str, ...], str],
+    profile_name: str,
+    validation_path: Path,
+) -> tuple[dict[str, Any], dict[str, str], tuple[dict[str, Any], ...]]:
+    transcription = _mapping(config.get("transcription"), "transcription", validation_path)
+    profiles = _mapping(transcription.get("profiles"), "transcription.profiles", validation_path)
+    if profile_name not in profiles:
+        available = ", ".join(sorted(str(name) for name in profiles)) or "(none)"
+        raise ConfigError(
+            f"Unknown transcription profile {profile_name!r}; available profiles: {available}"
+        )
+
+    summaries: list[dict[str, Any]] = []
+    effective_profiles: dict[str, dict[str, Any]] = {}
+    for name in sorted(profiles):
+        raw_profile = _mapping(
+            profiles[name], f"transcription.profiles.{name}", validation_path
+        )
+        effective = _effective_profile(raw_profile, validation_path, str(name))
+        effective_profiles[str(name)] = effective
+        summaries.append(
+            {
+                "name": str(name),
+                "provider": effective["provider"],
+                "active": str(name) == profile_name,
+            }
+        )
+
+    profile = effective_profiles[profile_name]
+    values = dict(DEFAULTS)
+    value_sources = {key: "built-in default" for key in values}
+    values["provider"] = profile["provider"]
+    value_sources["provider"] = source_paths.get(
+        ("transcription", "profiles", profile_name, "provider"), "built-in default"
+    )
+    if profile["provider"] == LOCAL_PROVIDER:
+        for profile_key, flat_key in LOCAL_PROFILE_TO_FLAT.items():
+            values[flat_key] = profile[profile_key]
+            value_sources[flat_key] = source_paths.get(
+                ("transcription", "profiles", profile_name, profile_key),
+                "built-in default",
+            )
+    else:
+        for profile_path, flat_key in AZURE_PROFILE_TO_FLAT.items():
+            values[flat_key] = _get_nested(profile, profile_path)
+            value_sources[flat_key] = source_paths.get(
+                ("transcription", "profiles", profile_name, *profile_path),
+                "built-in default",
+            )
+
+    folders = _mapping(config.get("folders"), "folders", validation_path)
+    for folder_key, flat_key in FOLDER_TO_FLAT.items():
+        values[flat_key] = folders[folder_key]
+        value_sources[flat_key] = source_paths.get(("folders", folder_key), "built-in default")
+    processing = _mapping(config.get("processing"), "processing", validation_path)
+    for processing_path, flat_key in PROCESSING_TO_FLAT.items():
+        values[flat_key] = _get_nested(processing, processing_path)
+        value_sources[flat_key] = source_paths.get(
+            ("processing", *processing_path), "built-in default"
+        )
+    return values, value_sources, tuple(summaries)
 
 
 def _resolve_paths(values: dict[str, Any], cwd: Path) -> None:
@@ -310,13 +792,15 @@ def resolve_config(
     *,
     cwd: Path,
     explicit_config: Path | None = None,
+    profile: str | None = None,
     cli_overrides: dict[str, Any] | None = None,
     home: Path | None = None,
 ) -> ResolvedConfig:
     current_directory = cwd.resolve()
     home_directory = (home or Path.home()).resolve()
-    values = dict(DEFAULTS)
-    sources = {key: "built-in default" for key in values}
+    config = deepcopy(BUILT_IN_CONFIG)
+    source_paths: dict[tuple[str, ...], str] = {}
+    _record_sources(config, source_paths, "built-in default")
     loaded_files: list[Path] = []
 
     candidates: list[tuple[Path, str, str, bool]] = [
@@ -367,13 +851,25 @@ def resolve_config(
             continue
         if not path.is_file():
             raise ConfigError(f"Config path is not a file: {path}")
-        layer, schema_report = _load_yaml(path)
+        layer, schema_report, legacy = _load_yaml(path)
         source_report.update(schema_report)
-        for key, value in layer.items():
-            values[key] = value
-            sources[key] = f"{label}: {path}"
+        source_label = f"{label}: {path}"
+        if legacy:
+            _apply_legacy_layer(config, layer, source_paths, source_label)
+        else:
+            _merge_config(config, layer, source_paths, source_label)
         loaded_files.append(path)
 
+    configured_profile = str(config["transcription"]["active_profile"])
+    selected_profile = profile or configured_profile
+    active_profile_source = (
+        "CLI option"
+        if profile is not None
+        else source_paths.get(("transcription", "active_profile"), "built-in default")
+    )
+    values, sources, profile_summaries = _normalized_values(
+        config, source_paths, selected_profile, current_directory
+    )
     for key, value in (cli_overrides or {}).items():
         if key == "schema_version":
             raise ConfigError(
@@ -385,13 +881,16 @@ def resolve_config(
             values[key] = value
             sources[key] = "CLI option"
 
-    _validate(values, require_provider_settings=True)
+    _validate_flat_values(values, require_provider_settings=True)
     _resolve_paths(values, current_directory)
     return ResolvedConfig(
         values=values,
         sources=sources,
         loaded_files=tuple(loaded_files),
         config_sources=tuple(config_sources),
+        active_profile=selected_profile,
+        active_profile_source=active_profile_source,
+        profiles=profile_summaries,
     )
 
 
@@ -455,21 +954,11 @@ def initialize_user_config(
     }
 
 
-def _replace_schema_version(text: str, path: Path) -> str:
-    matches = list(_SCHEMA_VERSION_LINE_PATTERN.finditer(text))
-    if len(matches) != 1:
-        raise ConfigError(
-            f"Cannot safely migrate schema_version in {path}; use one top-level "
-            "schema_version mapping entry"
-        )
-    match = matches[0]
-    return (
-        text[: match.start()]
-        + match.group("prefix")
-        + f'"{SCHEMA_VERSION}"'
-        + match.group("suffix")
-        + text[match.end() :]
-    )
+def _config_text(config: dict[str, Any]) -> str:
+    if config == BUILT_IN_CONFIG:
+        return config_example_text()
+    body = yaml.safe_dump(config, allow_unicode=True, sort_keys=False)
+    return f'schema_version: "{SCHEMA_VERSION}"\n\n{body}'
 
 
 def migrate_config_file(path: Path, *, dry_run: bool = False) -> dict[str, Any]:
@@ -479,7 +968,7 @@ def migrate_config_file(path: Path, *, dry_run: bool = False) -> dict[str, Any]:
     if not target.is_file():
         raise ConfigError(f"Config path is not a file: {target}")
 
-    text, loaded = _read_yaml(target)
+    _text, loaded = _read_yaml(target)
     schema_report = _inspect_schema_version(loaded, target)
     migration = schema_report["migration"]
     if migration is None:
@@ -491,22 +980,36 @@ def migrate_config_file(path: Path, *, dry_run: bool = False) -> dict[str, Any]:
             "backup_path": None,
         }
 
-    migrated_text = _replace_schema_version(text, target)
-    try:
-        migrated = yaml.safe_load(migrated_text)
-    except yaml.YAMLError as exc:
-        raise ConfigError(f"Migrated config is not valid YAML: {target}: {exc}") from exc
-    if not isinstance(migrated, dict):
-        raise ConfigError(f"Migrated config root must be a mapping: {target}")
-    migrated_report = _inspect_schema_version(dict(migrated), target)
-    if migrated_report["migration"] is not None:
-        raise ConfigError(f"Config migration did not reach schema {SCHEMA_VERSION}: {target}")
-    migrated_properties = dict(migrated)
-    migrated_properties.pop("schema_version")
-    unknown = sorted(set(migrated_properties) - set(DEFAULTS))
+    legacy = dict(loaded)
+    legacy.pop("schema_version")
+    unknown = sorted(set(legacy) - set(DEFAULTS))
     if unknown:
         raise ConfigError(f"Unknown config key(s) in {target}: {', '.join(unknown)}")
-    _validate(migrated_properties)
+    candidate = dict(DEFAULTS)
+    candidate.update(legacy)
+    _validate_flat_values(candidate)
+
+    migrated = deepcopy(BUILT_IN_CONFIG)
+    migrated_sources: dict[tuple[str, ...], str] = {}
+    _record_sources(migrated, migrated_sources, "built-in default")
+    _apply_legacy_layer(migrated, legacy, migrated_sources, f"legacy config: {target}")
+    migrated_text = _config_text(migrated)
+
+    try:
+        parsed = yaml.safe_load(migrated_text)
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"Migrated config is not valid YAML: {target}: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ConfigError(f"Migrated config root must be a mapping: {target}")
+    parsed_version = parsed.pop("schema_version", None)
+    if parsed_version != SCHEMA_VERSION:
+        raise ConfigError(f"Config migration did not reach schema {SCHEMA_VERSION}: {target}")
+    _validate_v2_layer(parsed, target)
+    active_profile = str(migrated["transcription"]["active_profile"])
+    migrated_values, _migrated_value_sources, _migrated_profiles = _normalized_values(
+        migrated, migrated_sources, active_profile, target
+    )
+    _validate_flat_values(migrated_values, require_provider_settings=True)
 
     backup_path = _next_backup_path(target)
     if dry_run:
@@ -515,6 +1018,7 @@ def migrate_config_file(path: Path, *, dry_run: bool = False) -> dict[str, Any]:
             "config_path": str(target),
             "from_schema_version": schema_report["schema_version"],
             "to_schema_version": SCHEMA_VERSION,
+            "active_profile": active_profile,
             "backup_path": str(backup_path),
         }
     try:
@@ -527,5 +1031,6 @@ def migrate_config_file(path: Path, *, dry_run: bool = False) -> dict[str, Any]:
         "config_path": str(target),
         "from_schema_version": schema_report["schema_version"],
         "to_schema_version": SCHEMA_VERSION,
+        "active_profile": active_profile,
         "backup_path": str(backup_path),
     }

@@ -16,8 +16,9 @@ intentionally outside this repository. Azure Speech can optionally add speaker l
 
 A script alone cannot turn speech into text. The script orchestrates audio conversion,
 chunking, resume, validation, and output; an automatic speech-recognition (ASR) model
-performs the actual speech-to-text inference. The `provider` setting selects local
-`faster-whisper`, a Whisper-family ASR model, or Azure Speech Fast Transcription.
+performs the actual speech-to-text inference. `transcription.active_profile` selects a
+named configuration, and that profile's `provider` selects local `faster-whisper`, a
+Whisper-family ASR model, or Azure Speech Fast Transcription.
 
 The local provider does not upload audio after its model has been downloaded. The Azure
 provider uploads one derived mono/16 kHz WAV only after the command includes
@@ -42,7 +43,7 @@ That final downstream stage is not part of the base CLI.
 - Windows 10/11 or Linux
 - Python 3.12 or newer
 - [`uv`](https://docs.astral.sh/uv/)
-- `ffmpeg` available on `PATH`, or an absolute `ffmpeg_executable` in config
+- `ffmpeg` available on `PATH`, or an absolute `processing.ffmpeg.executable` in config
 - Enough disk space for a mono 16 kHz WAV, plus split chunks for the local provider
 - For Azure: an Entra identity with the Speech User role and network access to the
   configured Speech endpoint
@@ -98,8 +99,28 @@ The real `./.tkn/config.yaml` is ignored by Git. Transcript outputs default to
 the current working directory. The equivalent explicit setting is:
 
 ```yaml
-schema_version: "1.1.0"
-output_dir: .
+schema_version: "2.0.0"
+folders:
+  output: .
+```
+
+The configuration is grouped by role:
+
+- `transcription`: named local and cloud transcription profiles
+- `folders`: output, local model, download cache, and durable state locations
+- `processing`: `ffmpeg`, heartbeat, and retained-working-file behavior
+
+The packaged example includes `local-small`, `local-large`, and `azure-ja`. Select the
+normal default in YAML, or override it for one invocation:
+
+```yaml
+transcription:
+  active_profile: local-small
+```
+
+```console
+tkn-audio-transcriber config profiles
+tkn-audio-transcriber --profile local-large transcribe "C:\path\to\meeting.flac"
 ```
 
 On the first transcription, a missing known model is downloaded automatically
@@ -150,17 +171,27 @@ example should use placeholders. The values below reflect the supported MVP cont
 replace only the endpoint placeholder with your own resource endpoint.
 
 ```yaml
-schema_version: "1.1.0"
-provider: azure-speech-fast
-azure_speech_endpoint: https://<speech-resource-name>.cognitiveservices.azure.com/
-azure_speech_region: japaneast
-azure_speech_api_version: "2025-10-15"
-azure_speech_locale: ja-JP
-azure_speech_diarization_enabled: true
-azure_speech_max_speakers: 8
-azure_speech_timeout_seconds: 600
-azure_speech_max_retries: 3
+schema_version: "2.0.0"
+transcription:
+  active_profile: azure-ja
+  profiles:
+    azure-ja:
+      provider: azure-speech-fast
+      endpoint: https://<speech-resource-name>.cognitiveservices.azure.com/
+      region: japaneast
+      api_version: "2025-10-15"
+      locale: ja-JP
+      diarization:
+        enabled: true
+        max_speakers: 8
+      request:
+        timeout_seconds: 600
+        max_retries: 3
 ```
+
+Azure Speech Fast Transcription does not expose a Whisper-style model-name setting.
+Its profile therefore contains the endpoint, locale, diarization, and request behavior
+instead of a `model` key.
 
 Preview is completely local: it does not create credentials, get a token, call Azure,
 download a model, invoke `ffmpeg`, or create output/state/cache/report/temporary files.
@@ -168,14 +199,13 @@ It reports the planned provider, endpoint type, region, API version, locale, and
 cloud approval is required.
 
 ```console
-tkn-audio-transcriber --config "C:\path\to\azure.yaml" transcribe ^
-  "C:\path\to\meeting.mp4" --dry-run
+tkn-audio-transcriber --profile azure-ja transcribe "C:\path\to\meeting.mp4" --dry-run
 ```
 
 An actual Azure run requires an approval flag that cannot be saved in YAML:
 
 ```console
-tkn-audio-transcriber --config "C:\path\to\azure.yaml" transcribe ^
+tkn-audio-transcriber --profile azure-ja transcribe ^
   "C:\path\to\meeting.mp4" --allow-cloud-upload
 ```
 
@@ -220,12 +250,24 @@ as JSON. It is read-only and does not create directories.
 ```console
 tkn-audio-transcriber config show
 tkn-audio-transcriber --config "C:\path\to\config.yaml" config show
+tkn-audio-transcriber --profile local-large config show
+```
+
+### `config profiles`
+
+Lists all named transcription profiles, their provider, and the active selection. It is
+read-only. Use global `--profile` to preview another selection without editing YAML.
+
+```console
+tkn-audio-transcriber config profiles
+tkn-audio-transcriber --profile local-large config profiles
 ```
 
 ### `config migrate`
 
-Migrates one legacy configuration to the current schema. The command validates the
-result, writes a backup beside the original, and replaces the original atomically.
+Migrates one flat schema 1.x configuration into schema 2's profile hierarchy. The
+command validates the result, writes a backup beside the original, and replaces the
+original atomically.
 Preview the operation with `--dry-run`. Without a path it targets the user config.
 
 ```console
@@ -280,8 +322,8 @@ Important safety options:
 - `--allow-cloud-upload`: approve an Azure upload for this invocation only; it is never
   read from configuration
 
-With `provider: faster-whisper`, if the configured known model (`tiny`, `base`, `small`,
-`medium`, or `large-v3`)
+When the selected profile uses `provider: faster-whisper`, if its known model (`tiny`,
+`base`, `small`, `medium`, or `large-v3`)
 is missing, the command downloads it automatically before audio processing.
 `--dry-run` never downloads a model. If a run is interrupted, repeat the same
 `transcribe` command; completed chunks are skipped.
@@ -394,23 +436,25 @@ Later sources override earlier sources:
 2. `~/.tkn/audio_transcriber/config.yaml`
 3. `./.tkn/config.yaml`
 4. explicit `--config`
-5. individual CLI options
+5. configured `transcription.active_profile`, or global `--profile`
+6. individual CLI options
 
 Unknown keys, invalid types, and unsupported `schema_version` values are errors.
-Every file is validated before merging, and `schema_version` is source metadata,
-not an overridable setting. `config show` reports the source selected for every
-value and the schema status of every source.
+Every file is validated before deep-merging its nested settings, and `schema_version`
+is source metadata, not an overridable setting. `config show` reports the selected
+profile, available profiles, source selected for every effective value, and schema
+status of every source.
 
-Application-owned configuration uses the independent schema version `"1.1.0"`.
-The three-part string is required. This reader accepts versions in the current
-Major through Minor `1`, including newer Patch versions such as `"1.1.7"` because
-Patch changes do not alter structure. It rejects newer Minor or Major versions,
-older Major versions without a tested migration, malformed versions, and missing
+Application-owned configuration uses the independent schema version `"2.0.0"`.
+The three-part string is required. This reader accepts schema 2 Patch versions such as
+`"2.0.7"` because Patch changes do not alter structure. It rejects newer Minor or Major
+versions, older versions without a tested migration, malformed versions, and missing
 versions with an actionable error.
 
-Version `1.0.x` and the former integer `schema_version: 1` remain readable through an
-in-memory migration and emit a warning; reading never rewrites a file. Run `config migrate`
-to persist `schema_version: "1.1.0"` with validation, backup, and atomic replacement.
+Flat versions `1.0.x`, `1.1.x`, and the former integer `schema_version: 1` remain
+readable through an in-memory structural migration and emit a warning; reading never
+rewrites a file. Run `config migrate` to persist schema `"2.0.0"` with named profiles,
+validation, backup, and atomic replacement.
 
 ## Scheduled operation
 
