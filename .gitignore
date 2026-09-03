@@ -10,4 +10,4 @@ build/
 .tkn/config.yaml
 .coverage
 htmlcov/
-
+/reference/
