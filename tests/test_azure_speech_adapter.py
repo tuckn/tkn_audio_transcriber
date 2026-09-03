@@ -12,7 +12,7 @@ from audio_transcriber.azure_speech_adapter import (
     AZURE_SPEECH_TOKEN_SCOPE,
     AzureSpeechFastAdapter,
 )
-from audio_transcriber.config import ResolvedConfig, resolve_config
+from audio_transcriber.config import AzureSpeechTranscriptionConfig, resolve_config
 from audio_transcriber.errors import AzureSpeechError, AzureSubmissionOutcomeUnknownError
 
 
@@ -47,16 +47,18 @@ class FakeClient:
         self.closed = True
 
 
-def make_config(tmp_path: Path, *, retries: int = 2) -> ResolvedConfig:
-    return resolve_config(
+def make_config(tmp_path: Path, *, retries: int = 2) -> AzureSpeechTranscriptionConfig:
+    resolved = resolve_config(
         cwd=tmp_path,
         home=tmp_path / "home",
+        profile="cloud/azure-ja",
         cli_overrides={
-            "provider": "azure-speech-fast",
             "azure_speech_endpoint": "https://example.cognitiveservices.azure.com/",
             "azure_speech_max_retries": retries,
         },
     )
+    assert isinstance(resolved.transcription, AzureSpeechTranscriptionConfig)
+    return resolved.transcription
 
 
 def make_adapter(

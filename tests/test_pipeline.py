@@ -11,7 +11,12 @@ import yaml
 from audio_transcriber import __version__
 from audio_transcriber.audio_integrity import WavInfo
 from audio_transcriber.azure_speech_adapter import AzureTranscription
-from audio_transcriber.config import ResolvedConfig, resolve_config
+from audio_transcriber.config import (
+    AzureSpeechTranscriptionConfig,
+    LocalTranscriptionConfig,
+    ResolvedConfig,
+    resolve_config,
+)
 from audio_transcriber.errors import AzureSpeechError, CloudUploadApprovalError, ValidationError
 from audio_transcriber.io_utils import sha256_file
 from audio_transcriber.models import Segment
@@ -120,8 +125,8 @@ def make_azure_config(tmp_path: Path) -> ResolvedConfig:
     return resolve_config(
         cwd=tmp_path,
         home=tmp_path / "home",
+        profile="cloud/azure-ja",
         cli_overrides={
-            "provider": "azure-speech-fast",
             "azure_speech_endpoint": "https://example.cognitiveservices.azure.com/",
             "output_dir": str(tmp_path / "outputs"),
             "state_dir": str(tmp_path / "state"),
@@ -224,7 +229,9 @@ def test_end_to_end_commit_validate_unchanged_and_source_immutability(
     azure_factory_calls: list[str] = []
     config = make_config(tmp_path)
 
-    def azure_factory(config: ResolvedConfig, logger: logging.Logger) -> FakeAzureRecognizer:
+    def azure_factory(
+        config: AzureSpeechTranscriptionConfig, logger: logging.Logger
+    ) -> FakeAzureRecognizer:
         azure_factory_calls.append("created")
         return FakeAzureRecognizer([])
 
@@ -327,7 +334,9 @@ def test_azure_dry_run_never_creates_clients_or_writes(tmp_path: Path) -> None:
     ffmpeg_calls: list[str] = []
     azure_factory_calls: list[str] = []
 
-    def azure_factory(config: ResolvedConfig, logger: logging.Logger) -> FakeAzureRecognizer:
+    def azure_factory(
+        config: AzureSpeechTranscriptionConfig, logger: logging.Logger
+    ) -> FakeAzureRecognizer:
         azure_factory_calls.append("created")
         return FakeAzureRecognizer([])
 
@@ -340,7 +349,8 @@ def test_azure_dry_run_never_creates_clients_or_writes(tmp_path: Path) -> None:
 
     assert result.status == "planned"
     assert result.plan == {
-        "profile": "local-small",
+        "mode": "cloud",
+        "profile": "cloud/azure-ja",
         "provider": "azure-speech-fast",
         "endpoint_type": "azure-custom-subdomain",
         "region": "japaneast",
@@ -370,7 +380,9 @@ def test_azure_actual_run_requires_per_run_cloud_approval_before_clients(
     ffmpeg_calls: list[str] = []
     azure_factory_calls: list[str] = []
 
-    def azure_factory(config: ResolvedConfig, logger: logging.Logger) -> FakeAzureRecognizer:
+    def azure_factory(
+        config: AzureSpeechTranscriptionConfig, logger: logging.Logger
+    ) -> FakeAzureRecognizer:
         azure_factory_calls.append("created")
         return FakeAzureRecognizer([])
 
@@ -428,6 +440,7 @@ def test_azure_whole_file_flow_preserves_speakers_and_provenance(
     assert manifest["schema_version"] == 2
     assert manifest["provider"] == "azure-speech-fast"
     assert manifest["provenance"] == {
+        "mode": "cloud",
         "provider": "azure-speech-fast",
         "api_version": "2025-10-15",
         "region": "japaneast",
@@ -464,7 +477,9 @@ def test_azure_duration_limit_is_checked_before_client_creation(
         ),
     )
 
-    def azure_factory(config: ResolvedConfig, logger: logging.Logger) -> FakeAzureRecognizer:
+    def azure_factory(
+        config: AzureSpeechTranscriptionConfig, logger: logging.Logger
+    ) -> FakeAzureRecognizer:
         factory_calls.append("created")
         return FakeAzureRecognizer([])
 
@@ -500,7 +515,9 @@ def test_azure_size_limit_is_checked_before_client_creation(tmp_path: Path) -> N
                 stream.seek(250_000_000 - 1)
                 stream.write(b"\0")
 
-    def azure_factory(config: ResolvedConfig, logger: logging.Logger) -> FakeAzureRecognizer:
+    def azure_factory(
+        config: AzureSpeechTranscriptionConfig, logger: logging.Logger
+    ) -> FakeAzureRecognizer:
         factory_calls.append("created")
         return FakeAzureRecognizer([])
 
@@ -548,7 +565,7 @@ def test_azure_failure_never_falls_back_to_local(tmp_path: Path) -> None:
         def transcribe(self, normalized_audio: Path) -> AzureTranscription:
             raise AzureSpeechError("safe Azure failure")
 
-    def local_factory(model: Path, config: ResolvedConfig) -> FakeRecognizer:
+    def local_factory(model: Path, config: LocalTranscriptionConfig) -> FakeRecognizer:
         local_factory_calls.append("created")
         return FakeRecognizer([])
 

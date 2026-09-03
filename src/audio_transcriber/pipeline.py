@@ -27,7 +27,11 @@ from .azure_speech_adapter import (
     AzureTranscription,
     endpoint_type,
 )
-from .config import ResolvedConfig
+from .config import (
+    AzureSpeechTranscriptionConfig,
+    LocalTranscriptionConfig,
+    ResolvedConfig,
+)
 from .errors import CloudUploadApprovalError, ValidationError
 from .ffmpeg_adapter import FfmpegAdapter
 from .io_utils import (
@@ -45,16 +49,16 @@ from .paths import job_directory, output_paths
 from .validation import MANIFEST_SCHEMA_VERSION, validate_artifact
 from .whisper_adapter import FasterWhisperAdapter, SpeechRecognizer
 
-RecognizerFactory = Callable[[Path, ResolvedConfig], SpeechRecognizer]
-LOCAL_PROVIDER = "faster-whisper"
-AZURE_PROVIDER = "azure-speech-fast"
+RecognizerFactory = Callable[[Path, LocalTranscriptionConfig], SpeechRecognizer]
 
 
 class AzureRecognizer(Protocol):
     def transcribe(self, normalized_audio: Path) -> AzureTranscription: ...
 
 
-AzureRecognizerFactory = Callable[[ResolvedConfig, logging.Logger], AzureRecognizer]
+AzureRecognizerFactory = Callable[
+    [AzureSpeechTranscriptionConfig, logging.Logger], AzureRecognizer
+]
 
 
 def format_timestamp(seconds: float) -> str:
@@ -74,29 +78,28 @@ def format_srt_timestamp(seconds: float) -> str:
 
 
 def _fingerprint_settings(config: ResolvedConfig) -> dict[str, object]:
-    provider = str(config.values["provider"])
-    keys = (
-        (
-            "provider",
-            "azure_speech_endpoint",
-            "azure_speech_region",
-            "azure_speech_api_version",
-            "azure_speech_locale",
-            "azure_speech_diarization_enabled",
-            "azure_speech_max_speakers",
-        )
-        if provider == AZURE_PROVIDER
-        else (
-            "provider",
-            "model",
-            "language",
-            "chunk_seconds",
-            "beam_size",
-            "compute_type",
-            "device",
-        )
-    )
-    return {key: config.values[key] for key in keys}
+    transcription = config.transcription
+    if isinstance(transcription, LocalTranscriptionConfig):
+        return {
+            "mode": transcription.mode,
+            "provider": transcription.provider,
+            "model": transcription.model,
+            "language": transcription.language,
+            "chunk_seconds": transcription.chunk_seconds,
+            "beam_size": transcription.beam_size,
+            "compute_type": transcription.compute_type,
+            "device": transcription.device,
+        }
+    return {
+        "mode": transcription.mode,
+        "provider": transcription.provider,
+        "azure_speech_endpoint": transcription.endpoint,
+        "azure_speech_region": transcription.region,
+        "azure_speech_api_version": transcription.api_version,
+        "azure_speech_locale": transcription.locale,
+        "azure_speech_diarization_enabled": transcription.diarization_enabled,
+        "azure_speech_max_speakers": transcription.max_speakers,
+    }
 
 
 def _fingerprint(source_hash: str, source_size: int, config: ResolvedConfig) -> str:
@@ -147,22 +150,22 @@ def _segment_text(segment: Segment, *, markdown: bool) -> str:
 
 
 def _render_markdown(source: Path, config: ResolvedConfig, segments: list[Segment]) -> str:
-    provider = str(config.values["provider"])
-    if provider == LOCAL_PROVIDER:
-        model = str(config.values["model"])
-        language = str(config.values["language"])
+    transcription = config.transcription
+    if isinstance(transcription, LocalTranscriptionConfig):
+        model = transcription.model
+        language = transcription.language
         speaker_separation = False
-        chunk_seconds: int | None = int(config.values["chunk_seconds"])
+        chunk_seconds: int | None = transcription.chunk_seconds
     else:
-        model = AZURE_PROVIDER
-        language = str(config.values["azure_speech_locale"])
-        speaker_separation = bool(config.values["azure_speech_diarization_enabled"])
+        model = transcription.provider
+        language = transcription.locale
+        speaker_separation = transcription.diarization_enabled
         chunk_seconds = None
     lines = [
         "---",
         f"source: {json.dumps(source.name, ensure_ascii=False)}",
         f"model: {json.dumps(model, ensure_ascii=False)}",
-        f"engine: {json.dumps(provider)}",
+        f"engine: {json.dumps(transcription.provider)}",
         f"language: {json.dumps(language, ensure_ascii=False)}",
         f"speaker_separation: {str(speaker_separation).lower()}",
         f"chunk_seconds: {json.dumps(chunk_seconds)}",
@@ -202,33 +205,36 @@ def _render_jsonl(segments: list[Segment]) -> str:
     )
 
 
-def _default_recognizer(model_path: Path, config: ResolvedConfig) -> SpeechRecognizer:
+def _default_recognizer(
+    model_path: Path, config: LocalTranscriptionConfig
+) -> SpeechRecognizer:
     return FasterWhisperAdapter(
         model_path=model_path,
-        language=str(config.values["language"]),
-        beam_size=int(config.values["beam_size"]),
-        device=str(config.values["device"]),
-        compute_type=str(config.values["compute_type"]),
+        language=config.language,
+        beam_size=config.beam_size,
+        device=config.device,
+        compute_type=config.compute_type,
     )
 
 
 def _default_azure_recognizer(
-    config: ResolvedConfig, logger: logging.Logger
+    config: AzureSpeechTranscriptionConfig, logger: logging.Logger
 ) -> AzureRecognizer:
     return AzureSpeechFastAdapter(config=config, logger=logger)
 
 
 def _dry_run_plan(config: ResolvedConfig) -> dict[str, object]:
-    provider = str(config.values["provider"])
-    if provider == AZURE_PROVIDER:
+    transcription = config.transcription
+    if isinstance(transcription, AzureSpeechTranscriptionConfig):
         return {
-            "profile": config.active_profile,
-            "provider": provider,
-            "endpoint_type": endpoint_type(str(config.values["azure_speech_endpoint"])),
-            "region": config.values["azure_speech_region"],
-            "api_version": config.values["azure_speech_api_version"],
-            "locale": config.values["azure_speech_locale"],
-            "diarization_enabled": config.values["azure_speech_diarization_enabled"],
+            "mode": transcription.mode,
+            "profile": config.profile_selector,
+            "provider": transcription.provider,
+            "endpoint_type": endpoint_type(transcription.endpoint),
+            "region": transcription.region,
+            "api_version": transcription.api_version,
+            "locale": transcription.locale,
+            "diarization_enabled": transcription.diarization_enabled,
             "cloud_upload_approval_required": True,
             "cloud_upload_approved": False,
             "network_calls": 0,
@@ -239,8 +245,9 @@ def _dry_run_plan(config: ResolvedConfig) -> dict[str, object]:
             },
         }
     return {
-        "profile": config.active_profile,
-        "provider": provider,
+        "mode": transcription.mode,
+        "profile": config.profile_selector,
+        "provider": transcription.provider,
         "endpoint_type": "local",
         "cloud_upload_approval_required": False,
         "network_calls": 0,
@@ -248,12 +255,19 @@ def _dry_run_plan(config: ResolvedConfig) -> dict[str, object]:
 
 
 def _job_settings(config: ResolvedConfig) -> dict[str, object]:
-    settings = dict(config.values)
-    settings["profile"] = config.active_profile
-    if settings["provider"] == AZURE_PROVIDER:
-        settings["azure_speech_endpoint"] = endpoint_type(
-            str(settings["azure_speech_endpoint"])
-        )
+    settings: dict[str, object] = {
+        "mode": config.active_mode,
+        "profile": config.profile_selector,
+        "output_dir": config.values["output_dir"],
+        "state_dir": config.values["state_dir"],
+        "ffmpeg_executable": config.values["ffmpeg_executable"],
+        "subprocess_timeout_seconds": config.values["subprocess_timeout_seconds"],
+        "heartbeat_seconds": config.values["heartbeat_seconds"],
+        "keep_working_files": config.values["keep_working_files"],
+        **_fingerprint_settings(config),
+    }
+    if isinstance(config.transcription, AzureSpeechTranscriptionConfig):
+        settings["azure_speech_endpoint"] = endpoint_type(config.transcription.endpoint)
     return settings
 
 
@@ -288,7 +302,7 @@ class TranscriptionPipeline:
         source_path = source.expanduser().resolve()
         if not source_path.is_file():
             raise ValidationError(f"Source media file not found: {source_path}")
-        provider = str(self.config.values["provider"])
+        transcription = self.config.transcription
         output_dir = self.config.path("output_dir")
         state_dir = self.config.path("state_dir")
         if output_dir is None:
@@ -337,7 +351,7 @@ class TranscriptionPipeline:
                 segment_count=0,
                 plan=_dry_run_plan(self.config),
             )
-        if provider == AZURE_PROVIDER and not allow_cloud_upload:
+        if isinstance(transcription, AzureSpeechTranscriptionConfig) and not allow_cloud_upload:
             raise CloudUploadApprovalError(
                 "Azure Speech would upload derived audio. Re-run this command with "
                 "--allow-cloud-upload after reviewing the source and provider settings."
@@ -345,12 +359,12 @@ class TranscriptionPipeline:
 
         self.ffmpeg.ensure_available()
         model_path: Path | None = None
-        if provider == LOCAL_PROVIDER:
+        if isinstance(transcription, LocalTranscriptionConfig):
             model_dir = self.config.path("model_dir")
             cache_dir = self.config.path("cache_dir")
             assert model_dir is not None and cache_dir is not None
             model_path = ensure_local_model(
-                model=str(self.config.values["model"]),
+                model=transcription.model,
                 model_dir=model_dir,
                 cache_dir=cache_dir,
                 logger=self.logger,
@@ -398,7 +412,7 @@ class TranscriptionPipeline:
             request_id: str | None = None
             chunks: list[Path] = []
             chunk_duration_seconds: float | None = None
-            if provider == LOCAL_PROVIDER:
+            if isinstance(transcription, LocalTranscriptionConfig):
                 assert model_path is not None
                 ensure_free_space(
                     state_dir,
@@ -410,7 +424,7 @@ class TranscriptionPipeline:
                     tracker.set_stage("splitting")
                     self.logger.info("Splitting normalized audio into chunks")
                     chunks = self.ffmpeg.split(
-                        normalized, chunks_dir, int(self.config.values["chunk_seconds"])
+                        normalized, chunks_dir, transcription.chunk_seconds
                     )
                 chunk_duration_seconds = validate_chunk_coverage(normalized_info, chunks)
 
@@ -423,12 +437,12 @@ class TranscriptionPipeline:
                 segments = _load_segments(checkpoint_segments)
                 next_index = max((segment.index for segment in segments), default=0) + 1
 
-                recognizer = self.recognizer_factory(model_path, self.config)
+                recognizer = self.recognizer_factory(model_path, transcription)
                 for chunk_position, chunk in enumerate(chunks):
                     if chunk.name in processed_chunks:
                         self.logger.info("Resuming: skipping completed chunk %s", chunk.name)
                         continue
-                    offset = chunk_position * int(self.config.values["chunk_seconds"])
+                    offset = chunk_position * transcription.chunk_seconds
                     tracker.set_stage(
                         "transcribing",
                         current_chunk=chunk.name,
@@ -490,7 +504,7 @@ class TranscriptionPipeline:
                         chunk_count=1,
                     )
                     azure_recognizer = self.azure_recognizer_factory(
-                        self.config, self.logger
+                        transcription, self.logger
                     )
                     azure_result = tracker.run_with_heartbeat(
                         partial(azure_recognizer.transcribe, normalized)
@@ -560,57 +574,51 @@ class TranscriptionPipeline:
                     ("jsonl", outputs.jsonl),
                 )
             }
-            is_azure = provider == AZURE_PROVIDER
             decoded_audio: dict[str, object] = {
                 **normalized_info.to_dict(),
                 "last_segment_end_seconds": last_segment_end,
             }
             if chunk_duration_seconds is not None:
                 decoded_audio["chunk_duration_seconds"] = chunk_duration_seconds
-            settings: dict[str, object] = (
-                {
-                    key: self.config.values[key]
-                    for key in (
-                        "language",
-                        "chunk_seconds",
-                        "beam_size",
-                        "compute_type",
-                        "device",
-                    )
+            if isinstance(transcription, LocalTranscriptionConfig):
+                settings: dict[str, object] = {
+                    "language": transcription.language,
+                    "chunk_seconds": transcription.chunk_seconds,
+                    "beam_size": transcription.beam_size,
+                    "compute_type": transcription.compute_type,
+                    "device": transcription.device,
                 }
-                if not is_azure
-                else {
-                    "endpoint_type": endpoint_type(
-                        str(self.config.values["azure_speech_endpoint"])
-                    ),
-                    "region": self.config.values["azure_speech_region"],
-                    "api_version": self.config.values["azure_speech_api_version"],
-                    "locale": self.config.values["azure_speech_locale"],
-                    "diarization_enabled": self.config.values[
-                        "azure_speech_diarization_enabled"
-                    ],
-                    "max_speakers": self.config.values["azure_speech_max_speakers"],
-                    "timeout_seconds": self.config.values["azure_speech_timeout_seconds"],
-                    "max_retries": self.config.values["azure_speech_max_retries"],
+                api_version: str | None = None
+                region: str | None = None
+                locale = transcription.language
+                diarization_enabled = False
+                authentication_method = "local"
+                model_requested: str | None = transcription.model
+            else:
+                settings = {
+                    "endpoint_type": endpoint_type(transcription.endpoint),
+                    "region": transcription.region,
+                    "api_version": transcription.api_version,
+                    "locale": transcription.locale,
+                    "diarization_enabled": transcription.diarization_enabled,
+                    "max_speakers": transcription.max_speakers,
+                    "timeout_seconds": transcription.timeout_seconds,
+                    "max_retries": transcription.max_retries,
                 }
-            )
+                api_version = transcription.api_version
+                region = transcription.region
+                locale = transcription.locale
+                diarization_enabled = transcription.diarization_enabled
+                authentication_method = "DefaultAzureCredential"
+                model_requested = None
             provenance: dict[str, object] = {
-                "provider": provider,
-                "api_version": (
-                    self.config.values["azure_speech_api_version"] if is_azure else None
-                ),
-                "region": self.config.values["azure_speech_region"] if is_azure else None,
-                "locale": (
-                    self.config.values["azure_speech_locale"]
-                    if is_azure
-                    else self.config.values["language"]
-                ),
-                "diarization_enabled": (
-                    self.config.values["azure_speech_diarization_enabled"]
-                    if is_azure
-                    else False
-                ),
-                "authentication_method": "DefaultAzureCredential" if is_azure else "local",
+                "mode": transcription.mode,
+                "provider": transcription.provider,
+                "api_version": api_version,
+                "region": region,
+                "locale": locale,
+                "diarization_enabled": diarization_enabled,
+                "authentication_method": authentication_method,
                 "source_sha256": source_hash,
                 "decoded_duration_seconds": normalized_info.duration_seconds,
                 "attempts": attempts,
@@ -626,12 +634,12 @@ class TranscriptionPipeline:
                     "tool_version": __version__,
                     "completed_at": completed_at,
                     "fingerprint": fingerprint,
-                    "provider": provider,
+                    "provider": transcription.provider,
                     "provenance": provenance,
                     "source": source_record,
                     "decoded_audio": decoded_audio,
                     "model": {
-                        "requested": self.config.values["model"] if not is_azure else None,
+                        "requested": model_requested,
                         "resolved_path": str(model_path) if model_path is not None else None,
                     },
                     "settings": settings,

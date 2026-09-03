@@ -14,7 +14,7 @@ from typing import Any, Protocol, cast
 
 import httpx
 
-from .config import ResolvedConfig
+from .config import AzureSpeechTranscriptionConfig
 from .errors import AzureSpeechError, AzureSubmissionOutcomeUnknownError
 from .models import Segment
 
@@ -187,7 +187,7 @@ class AzureSpeechFastAdapter:
     def __init__(
         self,
         *,
-        config: ResolvedConfig,
+        config: AzureSpeechTranscriptionConfig,
         logger: logging.Logger,
         credential_factory: CredentialFactory = _default_credential_factory,
         client_factory: ClientFactory = _default_client_factory,
@@ -202,13 +202,13 @@ class AzureSpeechFastAdapter:
         self.jitter = jitter
 
     def transcribe(self, normalized_audio: Path) -> AzureTranscription:
-        endpoint = str(self.config.values["azure_speech_endpoint"]).rstrip("/")
-        api_version = str(self.config.values["azure_speech_api_version"])
-        locale = str(self.config.values["azure_speech_locale"])
-        diarization = bool(self.config.values["azure_speech_diarization_enabled"])
-        max_speakers = int(self.config.values["azure_speech_max_speakers"])
-        timeout = float(self.config.values["azure_speech_timeout_seconds"])
-        max_retries = int(self.config.values["azure_speech_max_retries"])
+        endpoint = self.config.endpoint.rstrip("/")
+        api_version = self.config.api_version
+        locale = self.config.locale
+        diarization = self.config.diarization_enabled
+        max_speakers = self.config.max_speakers
+        timeout = float(self.config.timeout_seconds)
+        max_retries = self.config.max_retries
 
         definition: dict[str, Any] = {"locales": [locale]}
         if diarization:

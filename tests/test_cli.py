@@ -20,6 +20,7 @@ def test_transcribe_help_describes_audio_and_video(capsys: object) -> None:
         assert exc.code == 0
     captured = capsys.readouterr()  # type: ignore[attr-defined]
     assert "Source audio or video file with an audio stream" in captured.out
+    assert "--provider" not in captured.out
 
 
 def test_config_show_outputs_machine_readable_json(
@@ -33,16 +34,17 @@ def test_config_show_outputs_machine_readable_json(
     assert main(["config", "show"]) == 0
     captured = capsys.readouterr()  # type: ignore[attr-defined]
     payload = json.loads(captured.out)
-    assert payload["schema_version"] == "2.0.0"
-    assert payload["effective_schema_version"] == "2.0.0"
+    assert payload["schema_version"] == "3.0.0"
+    assert payload["effective_schema_version"] == "3.0.0"
     assert payload["has_in_memory_migrations"] is False
+    assert payload["active_mode"] == "local"
     assert payload["active_profile"] == "local-small"
     assert payload["config_sources"][0] == {
         "kind": "built_in",
         "path": None,
         "exists": True,
-        "schema_version": "2.0.0",
-        "effective_schema_version": "2.0.0",
+        "schema_version": "3.0.0",
+        "effective_schema_version": "3.0.0",
         "migration": None,
     }
     assert payload["values"]["model"]["value"] == "small"
@@ -60,18 +62,23 @@ def test_config_profiles_lists_and_selects_profiles(
     monkeypatch.setenv("USERPROFILE", str(isolated_home))  # type: ignore[attr-defined]
     monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
 
-    assert main(["--profile", "local-large", "config", "profiles"]) == 0
+    assert main(["--profile", "local/local-large", "config", "profiles"]) == 0
 
     payload = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
+    assert payload["active_mode"] == "local"
     assert payload["active_profile"] == "local-large"
     assert payload["active_profile_source"] == "CLI option"
-    assert {profile["name"] for profile in payload["profiles"]} == {
-        "local-small",
-        "local-large",
-        "azure-ja",
+    assert {profile["selector"] for profile in payload["profiles"]} == {
+        "local/local-small",
+        "local/local-large",
+        "local/gpu-quality",
+        "local/gpu-fast",
+        "cloud/azure-ja",
     }
     assert next(
-        profile for profile in payload["profiles"] if profile["name"] == "local-large"
+        profile
+        for profile in payload["profiles"]
+        if profile["selector"] == "local/local-large"
     )["active"] is True
 
 
@@ -109,7 +116,7 @@ def test_config_init_and_migrate_commands(
     assert main(["config", "init", str(target)]) == 0
     initialized = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
     assert initialized["status"] == "created"
-    assert target.read_text(encoding="utf-8").startswith('schema_version: "2.0.0"')
+    assert target.read_text(encoding="utf-8").startswith('schema_version: "3.0.0"')
 
     target.write_text("schema_version: 1\nlanguage: en\n", encoding="utf-8")
     assert main(["config", "migrate", str(target), "--dry-run"]) == 0
@@ -120,7 +127,7 @@ def test_config_init_and_migrate_commands(
     assert main(["config", "migrate", str(target)]) == 0
     migrated = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
     assert migrated["status"] == "migrated"
-    assert target.read_text(encoding="utf-8").startswith('schema_version: "2.0.0"')
+    assert target.read_text(encoding="utf-8").startswith('schema_version: "3.0.0"')
     assert Path(migrated["backup_path"]).is_file()
 
 
@@ -153,11 +160,17 @@ def test_profile_switches_transcription_model_for_dry_run(
     source.write_bytes(b"audio")
     monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
 
-    assert main(["--profile", "local-large", "transcribe", str(source), "--dry-run"]) == 0
+    assert (
+        main(
+            ["--profile", "local/local-large", "transcribe", str(source), "--dry-run"]
+        )
+        == 0
+    )
 
     payload = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
     assert payload["status"] == "planned"
-    assert payload["plan"]["profile"] == "local-large"
+    assert payload["plan"]["mode"] == "local"
+    assert payload["plan"]["profile"] == "local/local-large"
     assert payload["plan"]["provider"] == "faster-whisper"
 
 
@@ -168,11 +181,12 @@ def test_azure_profile_dry_run_does_not_require_upload_approval(
     isolated_home.mkdir()
     config = tmp_path / "azure.yaml"
     config.write_text(
-        'schema_version: "2.0.0"\n'
+        'schema_version: "3.0.0"\n'
         "transcription:\n"
-        "  profiles:\n"
-        "    azure-ja:\n"
-        "      endpoint: https://example.cognitiveservices.azure.com/\n",
+        "  cloud:\n"
+        "    profiles:\n"
+        "      azure-ja:\n"
+        "        endpoint: https://example.cognitiveservices.azure.com/\n",
         encoding="utf-8",
     )
     source = tmp_path / "audio.wav"
@@ -187,7 +201,7 @@ def test_azure_profile_dry_run_does_not_require_upload_approval(
                 "--config",
                 str(config),
                 "--profile",
-                "azure-ja",
+                "cloud/azure-ja",
                 "transcribe",
                 str(source),
                 "--dry-run",
@@ -198,7 +212,8 @@ def test_azure_profile_dry_run_does_not_require_upload_approval(
 
     payload = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
     assert payload["status"] == "planned"
-    assert payload["plan"]["profile"] == "azure-ja"
+    assert payload["plan"]["mode"] == "cloud"
+    assert payload["plan"]["profile"] == "cloud/azure-ja"
     assert payload["plan"]["provider"] == "azure-speech-fast"
     assert payload["plan"]["cloud_upload_approval_required"] is True
     assert payload["plan"]["network_calls"] == 0

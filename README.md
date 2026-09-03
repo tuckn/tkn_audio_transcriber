@@ -16,9 +16,11 @@ intentionally outside this repository. Azure Speech can optionally add speaker l
 
 A script alone cannot turn speech into text. The script orchestrates audio conversion,
 chunking, resume, validation, and output; an automatic speech-recognition (ASR) model
-performs the actual speech-to-text inference. `transcription.active_profile` selects a
-named configuration, and that profile's `provider` selects local `faster-whisper`, a
-Whisper-family ASR model, or Azure Speech Fast Transcription.
+performs the actual speech-to-text inference. `transcription.active.mode` selects the
+data-processing boundary (`local` or `cloud`), while `transcription.active.profile`
+selects a named configuration within that mode. Each mode's `provider` identifies the
+implementation: local `faster-whisper`, a Whisper-family ASR model, or Azure Speech
+Fast Transcription.
 
 The local provider does not upload audio after its model has been downloaded. The Azure
 provider uploads one derived mono/16 kHz WAV only after the command includes
@@ -99,28 +101,32 @@ The real `./.tkn/config.yaml` is ignored by Git. Transcript outputs default to
 the current working directory. The equivalent explicit setting is:
 
 ```yaml
-schema_version: "2.0.0"
+schema_version: "3.0.0"
 folders:
   output: .
 ```
 
 The configuration is grouped by role:
 
-- `transcription`: named local and cloud transcription profiles
+- `transcription`: the local/cloud boundary, provider, and mode-specific profiles
 - `folders`: output, local model, download cache, and durable state locations
 - `processing`: `ffmpeg`, heartbeat, and retained-working-file behavior
 
-The packaged example includes `local-small`, `local-large`, and `azure-ja`. Select the
-normal default in YAML, or override it for one invocation:
+The packaged example separates local and cloud settings. Local profiles are
+`local-small`, `local-large`, `gpu-quality`, and `gpu-fast`; the cloud profile is
+`azure-ja`. Select the normal mode and profile in YAML, or override both for one
+invocation with `--profile MODE/NAME`:
 
 ```yaml
 transcription:
-  active_profile: local-small
+  active:
+    mode: local
+    profile: local-small
 ```
 
 ```console
 tkn-audio-transcriber config profiles
-tkn-audio-transcriber --profile local-large transcribe "C:\path\to\meeting.flac"
+tkn-audio-transcriber --profile local/gpu-quality transcribe "C:\path\to\meeting.flac"
 ```
 
 On the first transcription, a missing known model is downloaded automatically
@@ -171,22 +177,25 @@ example should use placeholders. The values below reflect the supported MVP cont
 replace only the endpoint placeholder with your own resource endpoint.
 
 ```yaml
-schema_version: "2.0.0"
+schema_version: "3.0.0"
 transcription:
-  active_profile: azure-ja
-  profiles:
-    azure-ja:
-      provider: azure-speech-fast
-      endpoint: https://<speech-resource-name>.cognitiveservices.azure.com/
-      region: japaneast
-      api_version: "2025-10-15"
-      locale: ja-JP
-      diarization:
-        enabled: true
-        max_speakers: 8
-      request:
-        timeout_seconds: 600
-        max_retries: 3
+  active:
+    mode: cloud
+    profile: azure-ja
+  cloud:
+    provider: azure-speech-fast
+    profiles:
+      azure-ja:
+        endpoint: https://<speech-resource-name>.cognitiveservices.azure.com/
+        region: japaneast
+        api_version: "2025-10-15"
+        locale: ja-JP
+        diarization:
+          enabled: true
+          max_speakers: 8
+        request:
+          timeout_seconds: 600
+          max_retries: 3
 ```
 
 Azure Speech Fast Transcription does not expose a Whisper-style model-name setting.
@@ -199,13 +208,13 @@ It reports the planned provider, endpoint type, region, API version, locale, and
 cloud approval is required.
 
 ```console
-tkn-audio-transcriber --profile azure-ja transcribe "C:\path\to\meeting.mp4" --dry-run
+tkn-audio-transcriber --profile cloud/azure-ja transcribe "C:\path\to\meeting.mp4" --dry-run
 ```
 
 An actual Azure run requires an approval flag that cannot be saved in YAML:
 
 ```console
-tkn-audio-transcriber --profile azure-ja transcribe ^
+tkn-audio-transcriber --profile cloud/azure-ja transcribe ^
   "C:\path\to\meeting.mp4" --allow-cloud-upload
 ```
 
@@ -225,8 +234,8 @@ failures, and transport failures for which the audio stream is confirmed incompl
 `Retry-After` is honored. HTTP 400/401/403/413 are not retried. If the upload may have
 completed but no response arrived, the command stops with `submission_outcome_unknown`
 instead of risking a duplicate paid request.
-Azure errors never fall back to `faster-whisper`; select the local provider explicitly
-if a separate local run is desired.
+Azure errors never fall back to `faster-whisper`; select a `local/NAME` profile
+explicitly if a separate local run is desired.
 
 ## Commands
 
@@ -250,24 +259,29 @@ as JSON. It is read-only and does not create directories.
 ```console
 tkn-audio-transcriber config show
 tkn-audio-transcriber --config "C:\path\to\config.yaml" config show
-tkn-audio-transcriber --profile local-large config show
+tkn-audio-transcriber --profile local/gpu-quality config show
 ```
 
 ### `config profiles`
 
-Lists all named transcription profiles, their provider, and the active selection. It is
-read-only. Use global `--profile` to preview another selection without editing YAML.
+Lists named transcription profiles by local/cloud mode, their provider, and the active
+selection. It is read-only. Use global `--profile MODE/NAME` to preview another
+selection without editing YAML.
 
 ```console
 tkn-audio-transcriber config profiles
-tkn-audio-transcriber --profile local-large config profiles
+tkn-audio-transcriber --profile local/gpu-quality config profiles
 ```
+
+There is no independent `--provider` switch. Change providers by selecting a
+`local/NAME` or `cloud/NAME` profile. Azure-only options on a local profile, or
+Whisper-only options on a cloud profile, are configuration errors.
 
 ### `config migrate`
 
-Migrates one flat schema 1.x configuration into schema 2's profile hierarchy. The
-command validates the result, writes a backup beside the original, and replaces the
-original atomically.
+Migrates a flat schema 1.x configuration or schema 2's mixed profile list into schema
+3's separated local/cloud hierarchy. The command validates the result, writes a backup
+beside the original, and replaces the original atomically.
 Preview the operation with `--dry-run`. Without a path it targets the user config.
 
 ```console
@@ -322,7 +336,7 @@ Important safety options:
 - `--allow-cloud-upload`: approve an Azure upload for this invocation only; it is never
   read from configuration
 
-When the selected profile uses `provider: faster-whisper`, if its known model (`tiny`,
+When the selected mode is `local`, if its known model (`tiny`,
 `base`, `small`, `medium`, or `large-v3`)
 is missing, the command downloads it automatically before audio processing.
 `--dry-run` never downloads a model. If a run is interrupted, repeat the same
@@ -436,7 +450,7 @@ Later sources override earlier sources:
 2. `~/.tkn/audio_transcriber/config.yaml`
 3. `./.tkn/config.yaml`
 4. explicit `--config`
-5. configured `transcription.active_profile`, or global `--profile`
+5. configured `transcription.active.{mode,profile}`, or global `--profile MODE/NAME`
 6. individual CLI options
 
 Unknown keys, invalid types, and unsupported `schema_version` values are errors.
@@ -445,16 +459,16 @@ is source metadata, not an overridable setting. `config show` reports the select
 profile, available profiles, source selected for every effective value, and schema
 status of every source.
 
-Application-owned configuration uses the independent schema version `"2.0.0"`.
-The three-part string is required. This reader accepts schema 2 Patch versions such as
-`"2.0.7"` because Patch changes do not alter structure. It rejects newer Minor or Major
+Application-owned configuration uses the independent schema version `"3.0.0"`.
+The three-part string is required. This reader accepts schema 3 Patch versions such as
+`"3.0.7"` because Patch changes do not alter structure. It rejects newer Minor or Major
 versions, older versions without a tested migration, malformed versions, and missing
 versions with an actionable error.
 
-Flat versions `1.0.x`, `1.1.x`, and the former integer `schema_version: 1` remain
-readable through an in-memory structural migration and emit a warning; reading never
-rewrites a file. Run `config migrate` to persist schema `"2.0.0"` with named profiles,
-validation, backup, and atomic replacement.
+Flat versions `1.0.x`, `1.1.x`, the former integer `schema_version: 1`, and mixed-profile
+schema `2.0.x` remain readable through an in-memory structural migration and emit a
+warning; reading never rewrites a file. Run `config migrate` to persist schema `"3.0.0"`
+with validation, backup, and atomic replacement.
 
 ## Scheduled operation
 

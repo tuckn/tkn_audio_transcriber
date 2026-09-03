@@ -39,7 +39,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--profile",
-        help="Named transcription profile (overrides transcription.active_profile).",
+        metavar="MODE/NAME",
+        help=(
+            "Transcription profile such as local/gpu-quality or cloud/azure-ja; "
+            "an unqualified unique name is also accepted."
+        ),
     )
     verbosity = parser.add_mutually_exclusive_group()
     verbosity.add_argument("-q", "--quiet", action="store_true", help="Show errors only.")
@@ -108,11 +112,6 @@ def _parser() -> argparse.ArgumentParser:
         help="Source audio or video file with an audio stream (never modified).",
     )
     transcribe.add_argument("--output-dir", type=Path, help="Transcript output directory.")
-    transcribe.add_argument(
-        "--provider",
-        choices=("faster-whisper", "azure-speech-fast"),
-        help="ASR provider; Azure uploads normalized audio only with explicit approval.",
-    )
     transcribe.add_argument("--model", help="Model name or local model directory.")
     transcribe.add_argument("--language", help="Language code, for example ja or en.")
     transcribe.add_argument("--chunk-seconds", type=int, help="Chunk length in seconds.")
@@ -301,7 +300,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "transcribe":
             overrides = {
                 "output_dir": _path_value(args.output_dir),
-                "provider": args.provider,
                 "model": args.model,
                 "language": args.language,
                 "chunk_seconds": args.chunk_seconds,

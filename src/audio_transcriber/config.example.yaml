@@ -1,41 +1,61 @@
-schema_version: "2.0.0"
+schema_version: "3.0.0"
 
 transcription:
-  active_profile: local-small
+  active:
+    mode: local
+    profile: local-small
 
-  profiles:
-    local-small:
-      provider: faster-whisper
-      model: small
-      language: ja
-      chunk_seconds: 600
-      beam_size: 1
-      compute_type: int8
-      device: cpu
+  local:
+    provider: faster-whisper
+    profiles:
+      local-small:
+        model: small
+        language: ja
+        chunk_seconds: 600
+        beam_size: 1
+        compute_type: int8
+        device: cpu
 
-    local-large:
-      provider: faster-whisper
-      model: large-v3
-      language: ja
-      chunk_seconds: 600
-      beam_size: 1
-      compute_type: int8
-      device: cpu
+      local-large:
+        model: large-v3
+        language: ja
+        chunk_seconds: 600
+        beam_size: 1
+        compute_type: int8
+        device: cpu
 
-    # Azure Speech Fast Transcription does not expose a Whisper-style model name.
-    # Set the real endpoint only in a user or ignored working-directory config.
-    azure-ja:
-      provider: azure-speech-fast
-      endpoint: null
-      region: japaneast
-      api_version: "2025-10-15"
-      locale: ja-JP
-      diarization:
-        enabled: true
-        max_speakers: 8
-      request:
-        timeout_seconds: 600
-        max_retries: 3
+      gpu-quality:
+        model: large-v3
+        language: ja
+        chunk_seconds: 600
+        beam_size: 5
+        compute_type: float16
+        device: cuda
+
+      gpu-fast:
+        model: large-v3
+        language: ja
+        chunk_seconds: 600
+        beam_size: 1
+        compute_type: int8_float16
+        device: cuda
+
+  cloud:
+    provider: azure-speech-fast
+    profiles:
+      # Azure Speech Fast Transcription does not expose a Whisper-style model name.
+      # Set the real endpoint only in a user or ignored working-directory config.
+      azure-ja:
+        endpoint: null
+        region: japaneast
+        api_version: "2025-10-15"
+        locale: ja-JP
+        diarization:
+          enabled: true
+          max_speakers: 8
+        request:
+          timeout_seconds: 600
+          max_retries: 3
 
 folders:
   output: .
