@@ -9,7 +9,10 @@ from pathlib import Path
 import pytest
 
 from audio_transcriber.audio_integrity import (
+    AZURE_MAX_FILE_BYTES,
+    WavInfo,
     inspect_normalized_wav,
+    validate_azure_upload_limits,
     validate_chunk_coverage,
 )
 from audio_transcriber.errors import ValidationError
@@ -35,6 +38,23 @@ def test_chunk_duration_mismatch_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ValidationError, match="Chunk duration does not match"):
         validate_chunk_coverage(inspect_normalized_wav(normalized), [chunk])
+
+
+def test_azure_upload_size_limit_is_strict(tmp_path: Path) -> None:
+    normalized = tmp_path / "normalized.wav"
+    with normalized.open("wb") as stream:
+        stream.seek(AZURE_MAX_FILE_BYTES - 1)
+        stream.write(b"\0")
+    info = WavInfo(
+        duration_seconds=1.0,
+        frame_count=16_000,
+        sample_rate=16_000,
+        channels=1,
+        sample_width=2,
+    )
+
+    with pytest.raises(ValidationError, match="smaller than 250 MB"):
+        validate_azure_upload_limits(normalized, info)
 
 
 def test_heartbeat_run_log_and_status_are_durable(tmp_path: Path) -> None:

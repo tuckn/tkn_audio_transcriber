@@ -13,3 +13,14 @@ class ValidationError(AudioTranscriberError):
 class ExternalProcessError(AudioTranscriberError):
     """An external process failed."""
 
+
+class CloudUploadApprovalError(AudioTranscriberError):
+    """A required per-run cloud upload approval is missing."""
+
+
+class AzureSpeechError(AudioTranscriberError):
+    """Azure Speech returned a safe, actionable failure."""
+
+
+class AzureSubmissionOutcomeUnknownError(AzureSpeechError):
+    """An Azure upload may have completed, so automatic retry is unsafe."""

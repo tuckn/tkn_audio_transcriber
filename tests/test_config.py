@@ -20,15 +20,15 @@ def test_config_precedence_sources_and_schema_reports(tmp_path: Path) -> None:
     (home / ".tkn" / "audio_transcriber").mkdir(parents=True)
     (cwd / ".tkn").mkdir(parents=True)
     (home / ".tkn" / "audio_transcriber" / "config.yaml").write_text(
-        'schema_version: "1.0.0"\nlanguage: en\nchunk_seconds: 100\n',
+        'schema_version: "1.1.0"\nlanguage: en\nchunk_seconds: 100\n',
         encoding="utf-8",
     )
     (cwd / ".tkn" / "config.yaml").write_text(
-        'schema_version: "1.0.0"\nchunk_seconds: 200\nbeam_size: 2\n',
+        'schema_version: "1.1.0"\nchunk_seconds: 200\nbeam_size: 2\n',
         encoding="utf-8",
     )
     explicit.write_text(
-        'schema_version: "1.0.7"\nbeam_size: 3\nmodel: medium\n',
+        'schema_version: "1.1.7"\nbeam_size: 3\nmodel: medium\n',
         encoding="utf-8",
     )
 
@@ -56,7 +56,7 @@ def test_config_precedence_sources_and_schema_reports(tmp_path: Path) -> None:
         "working_directory",
         "explicit",
     ]
-    assert resolved.config_sources[-1]["schema_version"] == "1.0.7"
+    assert resolved.config_sources[-1]["schema_version"] == "1.1.7"
     assert all(
         source["effective_schema_version"] == SCHEMA_VERSION for source in resolved.config_sources
     )
@@ -72,7 +72,7 @@ def test_config_precedence_sources_and_schema_reports(tmp_path: Path) -> None:
         ('schema_version: "1.0"\n', "expected a quoted MAJOR.MINOR.PATCH"),
         ('schema_version: "1.0.0-rc1"\n', "expected a quoted MAJOR.MINOR.PATCH"),
         ('schema_version: "0.9.0"\n', "Unsupported older schema_version"),
-        ('schema_version: "1.1.0"\n', "Unsupported newer schema_version"),
+        ('schema_version: "1.2.0"\n', "Unsupported newer schema_version"),
         ('schema_version: "2.0.0"\n', "Unsupported newer schema_version"),
         ('schema_version: "1.0.0"\nunknown_key: value\n', "Unknown config key"),
         ('schema_version: "1.0.0"\nchunk_seconds: false\n', "must be an integer"),
@@ -116,6 +116,19 @@ def test_legacy_integer_schema_is_migrated_in_memory(tmp_path: Path) -> None:
         "persistent_config_updated": False,
     }
     assert resolved.values["language"] == "en"
+
+
+def test_schema_1_0_remains_readable_and_migratable(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text('schema_version: "1.0.7"\nlanguage: en\n', encoding="utf-8")
+
+    resolved = resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=config)
+    planned = migrate_config_file(config, dry_run=True)
+
+    assert resolved.has_in_memory_migrations
+    assert resolved.values["provider"] == "faster-whisper"
+    assert planned["from_schema_version"] == "1.0.7"
+    assert planned["to_schema_version"] == "1.1.0"
 
 
 def test_schema_version_cannot_be_a_cli_override(tmp_path: Path) -> None:
@@ -190,7 +203,7 @@ def test_config_migrate_supports_dry_run_backup_and_atomic_update(
     migrated = migrate_config_file(target)
     assert migrated["status"] == "migrated"
     assert target.read_text(encoding="utf-8") == (
-        '# personal setting\nschema_version: "1.0.0"  # legacy\nlanguage: en\n'
+        '# personal setting\nschema_version: "1.1.0"  # legacy\nlanguage: en\n'
     )
     backup = Path(str(migrated["backup_path"]))
     assert backup.read_text(encoding="utf-8") == original
@@ -201,12 +214,65 @@ def test_config_migrate_supports_dry_run_backup_and_atomic_update(
 
 def test_config_migrate_leaves_current_schema_unchanged(tmp_path: Path) -> None:
     target = tmp_path / "config.yaml"
-    text = 'schema_version: "1.0.3"\nlanguage: en\n'
+    text = 'schema_version: "1.1.3"\nlanguage: en\n'
     target.write_text(text, encoding="utf-8")
 
     result = migrate_config_file(target)
 
     assert result["status"] == "unchanged"
-    assert result["schema_version"] == "1.0.3"
+    assert result["schema_version"] == "1.1.3"
     assert target.read_text(encoding="utf-8") == text
     assert not list(tmp_path.glob("*.bak*"))
+
+
+def test_azure_provider_requires_valid_endpoint_only_when_selected(tmp_path: Path) -> None:
+    local = tmp_path / "local.yaml"
+    local.write_text(
+        'schema_version: "1.1.0"\nazure_speech_endpoint: 123\n',
+        encoding="utf-8",
+    )
+    resolved = resolve_config(
+        cwd=tmp_path,
+        home=tmp_path / "home",
+        explicit_config=local,
+    )
+    assert resolved.values["provider"] == "faster-whisper"
+
+    azure = tmp_path / "azure.yaml"
+    azure.write_text(
+        'schema_version: "1.1.0"\nprovider: azure-speech-fast\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="azure_speech_endpoint is required"):
+        resolve_config(
+            cwd=tmp_path,
+            home=tmp_path / "home",
+            explicit_config=azure,
+        )
+
+    azure.write_text(
+        'schema_version: "1.1.0"\n'
+        'provider: azure-speech-fast\n'
+        'azure_speech_endpoint: https://example.cognitiveservices.azure.com/\n',
+        encoding="utf-8",
+    )
+    resolved = resolve_config(
+        cwd=tmp_path,
+        home=tmp_path / "home",
+        explicit_config=azure,
+    )
+    assert resolved.values["azure_speech_api_version"] == "2025-10-15"
+
+
+def test_cloud_upload_approval_cannot_be_saved_in_config(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        'schema_version: "1.1.0"\nallow_cloud_upload: true\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="Unknown config key"):
+        resolve_config(
+            cwd=tmp_path,
+            home=tmp_path / "home",
+            explicit_config=config,
+        )

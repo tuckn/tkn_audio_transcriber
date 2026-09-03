@@ -1,0 +1,28 @@
+schema_version: "1.1.0"
+
+provider: faster-whisper
+model: small
+language: ja
+chunk_seconds: 600
+beam_size: 1
+compute_type: int8
+device: cpu
+output_dir: .
+model_dir: ~/.cache/audio_transcriber/models
+cache_dir: ~/.cache/audio_transcriber/huggingface
+state_dir: ~/.tkn/audio_transcriber/state
+ffmpeg_executable: ffmpeg
+subprocess_timeout_seconds: 3600
+heartbeat_seconds: 60
+keep_working_files: false
+
+# Required only when provider is azure-speech-fast. Keep real resource names in
+# user or working-directory config, not in a committed example.
+azure_speech_endpoint: null
+azure_speech_region: japaneast
+azure_speech_api_version: "2025-10-15"
+azure_speech_locale: ja-JP
+azure_speech_diarization_enabled: true
+azure_speech_max_speakers: 8
+azure_speech_timeout_seconds: 600
+azure_speech_max_retries: 3

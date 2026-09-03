@@ -9,17 +9,26 @@ from contextlib import suppress
 from datetime import datetime
 from functools import partial
 from pathlib import Path
+from typing import Protocol
 
 from . import __version__
 from .audio_integrity import (
+    AZURE_MAX_DURATION_SECONDS,
+    AZURE_MAX_FILE_BYTES,
     ensure_free_space,
     estimated_initial_scratch_bytes,
     inspect_normalized_wav,
     required_chunk_space_bytes,
+    validate_azure_upload_limits,
     validate_chunk_coverage,
 )
+from .azure_speech_adapter import (
+    AzureSpeechFastAdapter,
+    AzureTranscription,
+    endpoint_type,
+)
 from .config import ResolvedConfig
-from .errors import ValidationError
+from .errors import CloudUploadApprovalError, ValidationError
 from .ffmpeg_adapter import FfmpegAdapter
 from .io_utils import (
     append_jsonl,
@@ -37,6 +46,15 @@ from .validation import MANIFEST_SCHEMA_VERSION, validate_artifact
 from .whisper_adapter import FasterWhisperAdapter, SpeechRecognizer
 
 RecognizerFactory = Callable[[Path, ResolvedConfig], SpeechRecognizer]
+LOCAL_PROVIDER = "faster-whisper"
+AZURE_PROVIDER = "azure-speech-fast"
+
+
+class AzureRecognizer(Protocol):
+    def transcribe(self, normalized_audio: Path) -> AzureTranscription: ...
+
+
+AzureRecognizerFactory = Callable[[ResolvedConfig, logging.Logger], AzureRecognizer]
 
 
 def format_timestamp(seconds: float) -> str:
@@ -55,10 +73,21 @@ def format_srt_timestamp(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d},{millis:03d}"
 
 
-def _fingerprint(source_hash: str, source_size: int, config: ResolvedConfig) -> str:
-    settings = {
-        key: config.values[key]
-        for key in (
+def _fingerprint_settings(config: ResolvedConfig) -> dict[str, object]:
+    provider = str(config.values["provider"])
+    keys = (
+        (
+            "provider",
+            "azure_speech_endpoint",
+            "azure_speech_region",
+            "azure_speech_api_version",
+            "azure_speech_locale",
+            "azure_speech_diarization_enabled",
+            "azure_speech_max_speakers",
+        )
+        if provider == AZURE_PROVIDER
+        else (
+            "provider",
             "model",
             "language",
             "chunk_seconds",
@@ -66,12 +95,16 @@ def _fingerprint(source_hash: str, source_size: int, config: ResolvedConfig) -> 
             "compute_type",
             "device",
         )
-    }
+    )
+    return {key: config.values[key] for key in keys}
+
+
+def _fingerprint(source_hash: str, source_size: int, config: ResolvedConfig) -> str:
     payload = {
         "source_sha256": source_hash,
         "source_size": source_size,
         "tool_version": __version__,
-        "settings": settings,
+        "settings": _fingerprint_settings(config),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -93,6 +126,9 @@ def _load_segments(path: Path) -> list[Segment]:
                     end=float(value["end"]),
                     text=str(value["text"]),
                     chunk=str(value["chunk"]),
+                    speaker=(
+                        None if value.get("speaker") is None else str(value["speaker"])
+                    ),
                 )
             )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -102,15 +138,34 @@ def _load_segments(path: Path) -> list[Segment]:
     return segments
 
 
+def _segment_text(segment: Segment, *, markdown: bool) -> str:
+    if segment.speaker is None:
+        return segment.text
+    if markdown:
+        return f"[Speaker {segment.speaker}] {segment.text}"
+    return f"Speaker {segment.speaker}: {segment.text}"
+
+
 def _render_markdown(source: Path, config: ResolvedConfig, segments: list[Segment]) -> str:
+    provider = str(config.values["provider"])
+    if provider == LOCAL_PROVIDER:
+        model = str(config.values["model"])
+        language = str(config.values["language"])
+        speaker_separation = False
+        chunk_seconds: int | None = int(config.values["chunk_seconds"])
+    else:
+        model = AZURE_PROVIDER
+        language = str(config.values["azure_speech_locale"])
+        speaker_separation = bool(config.values["azure_speech_diarization_enabled"])
+        chunk_seconds = None
     lines = [
         "---",
         f"source: {json.dumps(source.name, ensure_ascii=False)}",
-        f"model: {json.dumps(str(config.values['model']), ensure_ascii=False)}",
-        'engine: "faster-whisper"',
-        f"language: {json.dumps(str(config.values['language']), ensure_ascii=False)}",
-        "speaker_separation: false",
-        f"chunk_seconds: {int(config.values['chunk_seconds'])}",
+        f"model: {json.dumps(model, ensure_ascii=False)}",
+        f"engine: {json.dumps(provider)}",
+        f"language: {json.dumps(language, ensure_ascii=False)}",
+        f"speaker_separation: {str(speaker_separation).lower()}",
+        f"chunk_seconds: {json.dumps(chunk_seconds)}",
         'transcriber: "tkn-audio-transcriber"',
         f"transcriber_version: {json.dumps(__version__)}",
         "---",
@@ -121,7 +176,8 @@ def _render_markdown(source: Path, config: ResolvedConfig, segments: list[Segmen
         "",
     ]
     lines.extend(
-        f"[{format_timestamp(segment.start)} - {format_timestamp(segment.end)}] {segment.text}"
+        f"[{format_timestamp(segment.start)} - {format_timestamp(segment.end)}] "
+        f"{_segment_text(segment, markdown=True)}"
         for segment in segments
     )
     return "\n".join(lines) + "\n"
@@ -133,7 +189,7 @@ def _render_srt(segments: list[Segment]) -> str:
             f"{segment.index}\n"
             f"{format_srt_timestamp(segment.start)} --> "
             f"{format_srt_timestamp(segment.end)}\n"
-            f"{segment.text}\n"
+            f"{_segment_text(segment, markdown=False)}\n"
         )
         for segment in segments
     ]
@@ -156,6 +212,48 @@ def _default_recognizer(model_path: Path, config: ResolvedConfig) -> SpeechRecog
     )
 
 
+def _default_azure_recognizer(
+    config: ResolvedConfig, logger: logging.Logger
+) -> AzureRecognizer:
+    return AzureSpeechFastAdapter(config=config, logger=logger)
+
+
+def _dry_run_plan(config: ResolvedConfig) -> dict[str, object]:
+    provider = str(config.values["provider"])
+    if provider == AZURE_PROVIDER:
+        return {
+            "provider": provider,
+            "endpoint_type": endpoint_type(str(config.values["azure_speech_endpoint"])),
+            "region": config.values["azure_speech_region"],
+            "api_version": config.values["azure_speech_api_version"],
+            "locale": config.values["azure_speech_locale"],
+            "diarization_enabled": config.values["azure_speech_diarization_enabled"],
+            "cloud_upload_approval_required": True,
+            "cloud_upload_approved": False,
+            "network_calls": 0,
+            "normalized_audio_validation": {
+                "status": "deferred_until_actual_run",
+                "duration_must_be_less_than_seconds": AZURE_MAX_DURATION_SECONDS,
+                "size_must_be_less_than_bytes": AZURE_MAX_FILE_BYTES,
+            },
+        }
+    return {
+        "provider": provider,
+        "endpoint_type": "local",
+        "cloud_upload_approval_required": False,
+        "network_calls": 0,
+    }
+
+
+def _job_settings(config: ResolvedConfig) -> dict[str, object]:
+    settings = dict(config.values)
+    if settings["provider"] == AZURE_PROVIDER:
+        settings["azure_speech_endpoint"] = endpoint_type(
+            str(settings["azure_speech_endpoint"])
+        )
+    return settings
+
+
 class TranscriptionPipeline:
     def __init__(
         self,
@@ -164,6 +262,7 @@ class TranscriptionPipeline:
         logger: logging.Logger,
         ffmpeg: FfmpegAdapter | None = None,
         recognizer_factory: RecognizerFactory = _default_recognizer,
+        azure_recognizer_factory: AzureRecognizerFactory = _default_azure_recognizer,
     ) -> None:
         self.config = config
         self.logger = logger
@@ -173,6 +272,7 @@ class TranscriptionPipeline:
             logger,
         )
         self.recognizer_factory = recognizer_factory
+        self.azure_recognizer_factory = azure_recognizer_factory
 
     def transcribe(
         self,
@@ -180,21 +280,19 @@ class TranscriptionPipeline:
         *,
         dry_run: bool,
         overwrite: bool,
+        allow_cloud_upload: bool = False,
     ) -> TranscriptionResult:
         source_path = source.expanduser().resolve()
         if not source_path.is_file():
             raise ValidationError(f"Source media file not found: {source_path}")
+        provider = str(self.config.values["provider"])
         output_dir = self.config.path("output_dir")
         state_dir = self.config.path("state_dir")
-        model_dir = self.config.path("model_dir")
-        cache_dir = self.config.path("cache_dir")
         if output_dir is None:
             raise ValidationError(
                 "output_dir is required. Set it in config or pass --output-dir."
             )
         assert state_dir is not None
-        assert model_dir is not None
-        assert cache_dir is not None
 
         source_stat = source_path.stat()
         self.logger.info("Hashing source media: %s", source_path)
@@ -234,15 +332,26 @@ class TranscriptionPipeline:
                 fingerprint=fingerprint,
                 outputs=outputs,
                 segment_count=0,
+                plan=_dry_run_plan(self.config),
+            )
+        if provider == AZURE_PROVIDER and not allow_cloud_upload:
+            raise CloudUploadApprovalError(
+                "Azure Speech would upload derived audio. Re-run this command with "
+                "--allow-cloud-upload after reviewing the source and provider settings."
             )
 
         self.ffmpeg.ensure_available()
-        model_path = ensure_local_model(
-            model=str(self.config.values["model"]),
-            model_dir=model_dir,
-            cache_dir=cache_dir,
-            logger=self.logger,
-        )
+        model_path: Path | None = None
+        if provider == LOCAL_PROVIDER:
+            model_dir = self.config.path("model_dir")
+            cache_dir = self.config.path("cache_dir")
+            assert model_dir is not None and cache_dir is not None
+            model_path = ensure_local_model(
+                model=str(self.config.values["model"]),
+                model_dir=model_dir,
+                cache_dir=cache_dir,
+                logger=self.logger,
+            )
 
         job_dir = job_directory(state_dir, source_path, fingerprint)
         chunks_dir = job_dir / "chunks"
@@ -259,7 +368,7 @@ class TranscriptionPipeline:
             job_dir=job_dir,
             fingerprint=fingerprint,
             source=source_record,
-            settings=dict(self.config.values),
+            settings=_job_settings(self.config),
             heartbeat_seconds=int(self.config.values["heartbeat_seconds"]),
             logger=self.logger,
         )
@@ -281,77 +390,125 @@ class TranscriptionPipeline:
                 self.logger.info("Normalizing audio to mono 16 kHz WAV")
                 self.ffmpeg.normalize(source_path, normalized)
             normalized_info = inspect_normalized_wav(normalized)
-            ensure_free_space(
-                state_dir,
-                required_chunk_space_bytes(normalized.stat().st_size),
-                stage="chunk creation",
-            )
+            attempts = 0
+            retries = 0
+            request_id: str | None = None
+            chunks: list[Path] = []
+            chunk_duration_seconds: float | None = None
+            if provider == LOCAL_PROVIDER:
+                assert model_path is not None
+                ensure_free_space(
+                    state_dir,
+                    required_chunk_space_bytes(normalized.stat().st_size),
+                    stage="chunk creation",
+                )
+                chunks = sorted(chunks_dir.glob("chunk_*.wav"))
+                if not chunks:
+                    tracker.set_stage("splitting")
+                    self.logger.info("Splitting normalized audio into chunks")
+                    chunks = self.ffmpeg.split(
+                        normalized, chunks_dir, int(self.config.values["chunk_seconds"])
+                    )
+                chunk_duration_seconds = validate_chunk_coverage(normalized_info, chunks)
 
-            chunks = sorted(chunks_dir.glob("chunk_*.wav"))
-            if not chunks:
-                tracker.set_stage("splitting")
-                self.logger.info("Splitting normalized audio into chunks")
-                chunks = self.ffmpeg.split(
-                    normalized, chunks_dir, int(self.config.values["chunk_seconds"])
-                )
-            chunk_duration_seconds = validate_chunk_coverage(normalized_info, chunks)
+                processed_chunks: set[str] = set()
+                if progress_path.exists():
+                    progress = read_json(progress_path)
+                    raw_processed = progress.get("processed_chunks", [])
+                    if isinstance(raw_processed, list):
+                        processed_chunks = {str(name) for name in raw_processed}
+                segments = _load_segments(checkpoint_segments)
+                next_index = max((segment.index for segment in segments), default=0) + 1
 
-            processed_chunks: set[str] = set()
-            if progress_path.exists():
-                progress = read_json(progress_path)
-                raw_processed = progress.get("processed_chunks", [])
-                if isinstance(raw_processed, list):
-                    processed_chunks = {str(name) for name in raw_processed}
-            segments = _load_segments(checkpoint_segments)
-            next_index = max((segment.index for segment in segments), default=0) + 1
+                recognizer = self.recognizer_factory(model_path, self.config)
+                for chunk_position, chunk in enumerate(chunks):
+                    if chunk.name in processed_chunks:
+                        self.logger.info("Resuming: skipping completed chunk %s", chunk.name)
+                        continue
+                    offset = chunk_position * int(self.config.values["chunk_seconds"])
+                    tracker.set_stage(
+                        "transcribing",
+                        current_chunk=chunk.name,
+                        chunk_position=chunk_position + 1,
+                        chunk_count=len(chunks),
+                    )
+                    self.logger.info(
+                        "Transcribing chunk %d/%d at %s",
+                        chunk_position + 1,
+                        len(chunks),
+                        format_timestamp(offset),
+                    )
+                    recognize = partial(
+                        recognizer.transcribe_chunk,
+                        chunk,
+                        offset=float(offset),
+                        first_index=next_index,
+                    )
+                    new_segments, detected_language, probability = tracker.run_with_heartbeat(
+                        recognize
+                    )
+                    append_jsonl(
+                        checkpoint_segments, [segment.to_dict() for segment in new_segments]
+                    )
+                    segments.extend(new_segments)
+                    next_index += len(new_segments)
+                    processed_chunks.add(chunk.name)
+                    atomic_write_json(
+                        progress_path,
+                        {
+                            "schema_version": 1,
+                            "processed_chunks": sorted(processed_chunks),
+                            "segment_count": len(segments),
+                            "detected_language": detected_language,
+                            "language_probability": probability,
+                        },
+                    )
+                    tracker.checkpoint()
 
-            recognizer = self.recognizer_factory(model_path, self.config)
-            for chunk_position, chunk in enumerate(chunks):
-                if chunk.name in processed_chunks:
-                    self.logger.info("Resuming: skipping completed chunk %s", chunk.name)
-                    continue
-                offset = chunk_position * int(self.config.values["chunk_seconds"])
-                tracker.set_stage(
-                    "transcribing",
-                    current_chunk=chunk.name,
-                    chunk_position=chunk_position + 1,
-                    chunk_count=len(chunks),
-                )
-                self.logger.info(
-                    "Transcribing chunk %d/%d at %s",
-                    chunk_position + 1,
-                    len(chunks),
-                    format_timestamp(offset),
-                )
-                recognize = partial(
-                    recognizer.transcribe_chunk,
-                    chunk,
-                    offset=float(offset),
-                    first_index=next_index,
-                )
-                new_segments, detected_language, probability = tracker.run_with_heartbeat(
-                    recognize
-                )
-                append_jsonl(
-                    checkpoint_segments, [segment.to_dict() for segment in new_segments]
-                )
-                segments.extend(new_segments)
-                next_index += len(new_segments)
-                processed_chunks.add(chunk.name)
-                atomic_write_json(
-                    progress_path,
-                    {
-                        "schema_version": 1,
-                        "processed_chunks": sorted(processed_chunks),
-                        "segment_count": len(segments),
-                        "detected_language": detected_language,
-                        "language_probability": probability,
-                    },
-                )
-                tracker.checkpoint()
-
-            if len(processed_chunks) != len(chunks):
-                raise ValidationError("Not all chunks were processed")
+                if len(processed_chunks) != len(chunks):
+                    raise ValidationError("Not all chunks were processed")
+                attempts = len(chunks)
+            else:
+                validate_azure_upload_limits(normalized, normalized_info)
+                progress = read_json(progress_path) if progress_path.exists() else {}
+                completed_request = progress.get("azure_request_completed") is True
+                segments = _load_segments(checkpoint_segments) if completed_request else []
+                if completed_request and checkpoint_segments.exists():
+                    attempts = int(progress.get("attempts", 1))
+                    retries = int(progress.get("retries", max(0, attempts - 1)))
+                    raw_request_id = progress.get("request_id")
+                    request_id = raw_request_id if isinstance(raw_request_id, str) else None
+                    self.logger.info("Resuming from completed Azure Speech response checkpoint")
+                else:
+                    tracker.set_stage(
+                        "transcribing",
+                        current_chunk=normalized.name,
+                        chunk_position=1,
+                        chunk_count=1,
+                    )
+                    azure_recognizer = self.azure_recognizer_factory(
+                        self.config, self.logger
+                    )
+                    azure_result = tracker.run_with_heartbeat(
+                        partial(azure_recognizer.transcribe, normalized)
+                    )
+                    segments = azure_result.segments
+                    attempts = azure_result.attempts
+                    retries = azure_result.retries
+                    request_id = azure_result.request_id
+                    atomic_write_text(checkpoint_segments, _render_jsonl(segments))
+                    atomic_write_json(
+                        progress_path,
+                        {
+                            "schema_version": 1,
+                            "azure_request_completed": True,
+                            "segment_count": len(segments),
+                            "attempts": attempts,
+                            "retries": retries,
+                            "request_id": request_id,
+                        },
+                    )
+                    tracker.checkpoint()
             segments.sort(key=lambda item: item.index)
 
             last_segment_end = max((segment.end for segment in segments), default=0.0)
@@ -400,6 +557,64 @@ class TranscriptionPipeline:
                     ("jsonl", outputs.jsonl),
                 )
             }
+            is_azure = provider == AZURE_PROVIDER
+            decoded_audio: dict[str, object] = {
+                **normalized_info.to_dict(),
+                "last_segment_end_seconds": last_segment_end,
+            }
+            if chunk_duration_seconds is not None:
+                decoded_audio["chunk_duration_seconds"] = chunk_duration_seconds
+            settings: dict[str, object] = (
+                {
+                    key: self.config.values[key]
+                    for key in (
+                        "language",
+                        "chunk_seconds",
+                        "beam_size",
+                        "compute_type",
+                        "device",
+                    )
+                }
+                if not is_azure
+                else {
+                    "endpoint_type": endpoint_type(
+                        str(self.config.values["azure_speech_endpoint"])
+                    ),
+                    "region": self.config.values["azure_speech_region"],
+                    "api_version": self.config.values["azure_speech_api_version"],
+                    "locale": self.config.values["azure_speech_locale"],
+                    "diarization_enabled": self.config.values[
+                        "azure_speech_diarization_enabled"
+                    ],
+                    "max_speakers": self.config.values["azure_speech_max_speakers"],
+                    "timeout_seconds": self.config.values["azure_speech_timeout_seconds"],
+                    "max_retries": self.config.values["azure_speech_max_retries"],
+                }
+            )
+            provenance: dict[str, object] = {
+                "provider": provider,
+                "api_version": (
+                    self.config.values["azure_speech_api_version"] if is_azure else None
+                ),
+                "region": self.config.values["azure_speech_region"] if is_azure else None,
+                "locale": (
+                    self.config.values["azure_speech_locale"]
+                    if is_azure
+                    else self.config.values["language"]
+                ),
+                "diarization_enabled": (
+                    self.config.values["azure_speech_diarization_enabled"]
+                    if is_azure
+                    else False
+                ),
+                "authentication_method": "DefaultAzureCredential" if is_azure else "local",
+                "source_sha256": source_hash,
+                "decoded_duration_seconds": normalized_info.duration_seconds,
+                "attempts": attempts,
+                "retries": retries,
+                "request_id": request_id,
+                "tool_version": __version__,
+            }
             atomic_write_json(
                 outputs.manifest,
                 {
@@ -408,26 +623,15 @@ class TranscriptionPipeline:
                     "tool_version": __version__,
                     "completed_at": completed_at,
                     "fingerprint": fingerprint,
+                    "provider": provider,
+                    "provenance": provenance,
                     "source": source_record,
-                    "decoded_audio": {
-                        **normalized_info.to_dict(),
-                        "chunk_duration_seconds": chunk_duration_seconds,
-                        "last_segment_end_seconds": last_segment_end,
-                    },
+                    "decoded_audio": decoded_audio,
                     "model": {
-                        "requested": self.config.values["model"],
-                        "resolved_path": str(model_path),
+                        "requested": self.config.values["model"] if not is_azure else None,
+                        "resolved_path": str(model_path) if model_path is not None else None,
                     },
-                    "settings": {
-                        key: self.config.values[key]
-                        for key in (
-                            "language",
-                            "chunk_seconds",
-                            "beam_size",
-                            "compute_type",
-                            "device",
-                        )
-                    },
+                    "settings": settings,
                     "segment_count": len(segments),
                     "outputs": output_records,
                 },

@@ -7,7 +7,8 @@ from typing import Any
 from .errors import ValidationError
 from .io_utils import read_json, sha256_file
 
-MANIFEST_SCHEMA_VERSION = 1
+MANIFEST_SCHEMA_VERSION = 2
+SUPPORTED_MANIFEST_SCHEMA_VERSIONS = {1, MANIFEST_SCHEMA_VERSION}
 
 
 def _validated_file(record: Any, label: str, manifest_dir: Path) -> Path:
@@ -38,10 +39,33 @@ def validate_artifact(manifest_path: Path, *, verify_source: bool) -> dict[str, 
         manifest = read_json(path)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise ValidationError(f"Cannot read manifest {path}: {exc}") from exc
-    if manifest.get("schema_version") != MANIFEST_SCHEMA_VERSION:
+    schema_version = manifest.get("schema_version")
+    if schema_version not in SUPPORTED_MANIFEST_SCHEMA_VERSIONS:
         raise ValidationError(
-            f"Unsupported manifest schema_version: {manifest.get('schema_version')!r}"
+            f"Unsupported manifest schema_version: {schema_version!r}"
         )
+    if schema_version == MANIFEST_SCHEMA_VERSION:
+        provenance = manifest.get("provenance")
+        if not isinstance(provenance, dict):
+            raise ValidationError("Manifest provenance must be an object for schema 2")
+        required_provenance = {
+            "provider",
+            "api_version",
+            "region",
+            "locale",
+            "diarization_enabled",
+            "authentication_method",
+            "source_sha256",
+            "decoded_duration_seconds",
+            "attempts",
+            "retries",
+            "tool_version",
+        }
+        missing = sorted(required_provenance - set(provenance))
+        if missing:
+            raise ValidationError(
+                "Manifest provenance is incomplete: " + ", ".join(missing)
+            )
     output_records = manifest.get("outputs")
     if not isinstance(output_records, dict):
         raise ValidationError("Manifest outputs must be an object")
@@ -70,4 +94,3 @@ def validate_artifact(manifest_path: Path, *, verify_source: bool) -> dict[str, 
         "outputs": validated,
         "source_verified": source_verified,
     }
-

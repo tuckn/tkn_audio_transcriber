@@ -12,9 +12,13 @@ class Segment:
     end: float
     text: str
     chunk: str
+    speaker: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        result = asdict(self)
+        if self.speaker is None:
+            result.pop("speaker")
+        return result
 
 
 @dataclass(frozen=True)
@@ -40,13 +44,16 @@ class TranscriptionResult:
     fingerprint: str
     outputs: OutputPaths
     segment_count: int
+    plan: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "status": self.status,
             "source": str(self.source),
             "fingerprint": self.fingerprint,
             "segment_count": self.segment_count,
             "outputs": self.outputs.as_dict(),
         }
-
+        if self.plan is not None:
+            result["plan"] = self.plan
+        return result

@@ -13,6 +13,8 @@ NORMALIZED_CHANNELS = 1
 NORMALIZED_SAMPLE_WIDTH = 2
 MINIMUM_PREFLIGHT_BYTES = 512 * 1024 * 1024
 POST_NORMALIZE_MARGIN_BYTES = 64 * 1024 * 1024
+AZURE_MAX_DURATION_SECONDS = 2 * 60 * 60
+AZURE_MAX_FILE_BYTES = 250_000_000
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,20 @@ def validate_chunk_coverage(normalized: WavInfo, chunks: list[Path]) -> float:
             f"chunks={chunk_duration:.3f}s, tolerance={tolerance:.3f}s"
         )
     return chunk_duration
+
+
+def validate_azure_upload_limits(path: Path, info: WavInfo) -> None:
+    size = path.stat().st_size
+    if info.duration_seconds >= AZURE_MAX_DURATION_SECONDS:
+        raise ValidationError(
+            "Azure Speech normalized audio must be shorter than 2 hours: "
+            f"decoded={info.duration_seconds:.3f}s"
+        )
+    if size >= AZURE_MAX_FILE_BYTES:
+        raise ValidationError(
+            "Azure Speech normalized audio must be smaller than 250 MB: "
+            f"size={size} bytes"
+        )
 
 
 def _existing_anchor(path: Path) -> Path:

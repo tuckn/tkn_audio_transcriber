@@ -27,7 +27,9 @@ from .validation import validate_artifact
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tkn-audio-transcriber",
-        description=("Create local Markdown, SRT, and JSONL transcripts from audio or video."),
+        description=(
+            "Create Markdown, SRT, and JSONL transcripts with local or Azure Speech ASR."
+        ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
@@ -99,6 +101,11 @@ def _parser() -> argparse.ArgumentParser:
         help="Source audio or video file with an audio stream (never modified).",
     )
     transcribe.add_argument("--output-dir", type=Path, help="Transcript output directory.")
+    transcribe.add_argument(
+        "--provider",
+        choices=("faster-whisper", "azure-speech-fast"),
+        help="ASR provider; Azure uploads normalized audio only with explicit approval.",
+    )
     transcribe.add_argument("--model", help="Model name or local model directory.")
     transcribe.add_argument("--language", help="Language code, for example ja or en.")
     transcribe.add_argument("--chunk-seconds", type=int, help="Chunk length in seconds.")
@@ -122,6 +129,39 @@ def _parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Keep normalized audio and chunks after successful verification.",
+    )
+    transcribe.add_argument(
+        "--azure-speech-endpoint",
+        help="Azure Speech HTTPS resource endpoint (never a subscription key).",
+    )
+    transcribe.add_argument("--azure-speech-region", help="Azure Speech resource region.")
+    transcribe.add_argument("--azure-speech-api-version", help="Speech REST API version.")
+    transcribe.add_argument("--azure-speech-locale", help="Speech locale, for example ja-JP.")
+    transcribe.add_argument(
+        "--azure-speech-diarization-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable Azure speaker diarization.",
+    )
+    transcribe.add_argument(
+        "--azure-speech-max-speakers",
+        type=int,
+        help="Expected maximum speakers for diarization (2-35).",
+    )
+    transcribe.add_argument(
+        "--azure-speech-timeout-seconds", type=int, help="Azure request timeout in seconds."
+    )
+    transcribe.add_argument(
+        "--azure-speech-max-retries",
+        type=int,
+        help="Maximum safe automatic Azure retries.",
+    )
+    transcribe.add_argument(
+        "--allow-cloud-upload",
+        action="store_true",
+        help=(
+            "Approve uploading the normalized audio for this run only; cannot be saved in config."
+        ),
     )
     transcribe.add_argument(
         "--dry-run",
@@ -248,6 +288,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "transcribe":
             overrides = {
                 "output_dir": _path_value(args.output_dir),
+                "provider": args.provider,
                 "model": args.model,
                 "language": args.language,
                 "chunk_seconds": args.chunk_seconds,
@@ -261,6 +302,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "subprocess_timeout_seconds": args.subprocess_timeout_seconds,
                 "heartbeat_seconds": args.heartbeat_seconds,
                 "keep_working_files": args.keep_working_files,
+                "azure_speech_endpoint": args.azure_speech_endpoint,
+                "azure_speech_region": args.azure_speech_region,
+                "azure_speech_api_version": args.azure_speech_api_version,
+                "azure_speech_locale": args.azure_speech_locale,
+                "azure_speech_diarization_enabled": (
+                    args.azure_speech_diarization_enabled
+                ),
+                "azure_speech_max_speakers": args.azure_speech_max_speakers,
+                "azure_speech_timeout_seconds": args.azure_speech_timeout_seconds,
+                "azure_speech_max_retries": args.azure_speech_max_retries,
             }
             config = _resolve(args, overrides)
             _warn_in_memory_migrations(config, logger)
@@ -268,6 +319,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.audio,
                 dry_run=args.dry_run,
                 overwrite=args.overwrite,
+                allow_cloud_upload=args.allow_cloud_upload,
             )
             _json_result(result.to_dict())
             return 0

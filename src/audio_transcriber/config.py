@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -13,16 +14,17 @@ from .errors import ConfigError
 from .io_utils import atomic_write_text
 
 APPLICATION_ID = "audio_transcriber"
-SCHEMA_VERSION = "1.0.0"
-_SCHEMA_VERSION_PARTS = (1, 0, 0)
+SCHEMA_VERSION = "1.1.0"
+_SCHEMA_VERSION_PARTS = (1, 1, 0)
 _SCHEMA_VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 _SCHEMA_VERSION_LINE_PATTERN = re.compile(
     r"^(?P<prefix>schema_version\s*:\s*)(?P<value>[^#\r\n]*?)(?P<suffix>\s*(?:#.*)?)$",
     re.MULTILINE,
 )
-CONFIG_EXAMPLE_RESOURCE = "resources/config.example.yaml"
+CONFIG_EXAMPLE_RESOURCE = "config.example.yaml"
 
 DEFAULTS: dict[str, Any] = {
+    "provider": "faster-whisper",
     "model": "small",
     "language": "ja",
     "chunk_seconds": 600,
@@ -37,9 +39,18 @@ DEFAULTS: dict[str, Any] = {
     "subprocess_timeout_seconds": 3600,
     "heartbeat_seconds": 60,
     "keep_working_files": False,
+    "azure_speech_endpoint": None,
+    "azure_speech_region": "japaneast",
+    "azure_speech_api_version": "2025-10-15",
+    "azure_speech_locale": "ja-JP",
+    "azure_speech_diarization_enabled": True,
+    "azure_speech_max_speakers": 8,
+    "azure_speech_timeout_seconds": 600,
+    "azure_speech_max_retries": 3,
 }
 
 EXPECTED_TYPES: dict[str, type[Any] | tuple[type[Any], ...]] = {
+    "provider": str,
     "model": str,
     "language": str,
     "chunk_seconds": int,
@@ -54,9 +65,27 @@ EXPECTED_TYPES: dict[str, type[Any] | tuple[type[Any], ...]] = {
     "subprocess_timeout_seconds": int,
     "heartbeat_seconds": int,
     "keep_working_files": bool,
+    "azure_speech_endpoint": (str, type(None)),
+    "azure_speech_region": str,
+    "azure_speech_api_version": str,
+    "azure_speech_locale": str,
+    "azure_speech_diarization_enabled": bool,
+    "azure_speech_max_speakers": int,
+    "azure_speech_timeout_seconds": int,
+    "azure_speech_max_retries": int,
 }
 
 PATH_KEYS = {"output_dir", "model_dir", "cache_dir", "state_dir"}
+AZURE_SETTING_KEYS = {
+    "azure_speech_endpoint",
+    "azure_speech_region",
+    "azure_speech_api_version",
+    "azure_speech_locale",
+    "azure_speech_diarization_enabled",
+    "azure_speech_max_speakers",
+    "azure_speech_timeout_seconds",
+    "azure_speech_max_retries",
+}
 
 
 @dataclass(frozen=True)
@@ -172,8 +201,11 @@ def _inspect_schema_version(value: dict[str, Any], path: Path) -> dict[str, Any]
     }
 
 
-def _validate(values: dict[str, Any]) -> None:
+def _validate(values: dict[str, Any], *, require_provider_settings: bool = False) -> None:
+    azure_active = values.get("provider") == "azure-speech-fast"
     for key, value in values.items():
+        if key in AZURE_SETTING_KEYS and not azure_active:
+            continue
         expected_type = EXPECTED_TYPES[key]
         if isinstance(value, bool) and expected_type is int:
             raise ConfigError(f"{key} must be an integer, not a boolean")
@@ -186,12 +218,66 @@ def _validate(values: dict[str, Any]) -> None:
         "beam_size",
         "subprocess_timeout_seconds",
         "heartbeat_seconds",
+        "azure_speech_timeout_seconds",
     ):
-        if key in values and values[key] <= 0:
+        if key in values and (key not in AZURE_SETTING_KEYS or azure_active) and values[key] <= 0:
             raise ConfigError(f"{key} must be greater than zero")
-    for key in ("model", "language", "compute_type", "device", "ffmpeg_executable"):
-        if key in values and not values[key].strip():
+    if (
+        azure_active
+        and "azure_speech_max_retries" in values
+        and values["azure_speech_max_retries"] < 0
+    ):
+        raise ConfigError("azure_speech_max_retries must be zero or greater")
+    if (
+        azure_active
+        and "azure_speech_max_speakers" in values
+        and not 2 <= values["azure_speech_max_speakers"] <= 35
+    ):
+        raise ConfigError("azure_speech_max_speakers must be between 2 and 35")
+    for key in (
+        "provider",
+        "model",
+        "language",
+        "compute_type",
+        "device",
+        "ffmpeg_executable",
+        "azure_speech_region",
+        "azure_speech_api_version",
+        "azure_speech_locale",
+    ):
+        if key in values and (key not in AZURE_SETTING_KEYS or azure_active) and not values[
+            key
+        ].strip():
             raise ConfigError(f"{key} must not be empty")
+    if "provider" in values and values["provider"] not in {
+        "faster-whisper",
+        "azure-speech-fast",
+    }:
+        raise ConfigError(
+            "provider must be either 'faster-whisper' or 'azure-speech-fast'"
+        )
+    if require_provider_settings and values.get("provider") == "azure-speech-fast":
+        endpoint = values.get("azure_speech_endpoint")
+        if not isinstance(endpoint, str) or not endpoint.strip():
+            raise ConfigError(
+                "azure_speech_endpoint is required when provider is azure-speech-fast"
+            )
+        parsed = urlsplit(endpoint)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in ("", "/")
+            or parsed.query
+            or parsed.fragment
+            or "<" in endpoint
+            or ">" in endpoint
+        ):
+            raise ConfigError(
+                "azure_speech_endpoint must be a concrete HTTPS origin without "
+                "credentials, an extra path, a query, or a fragment"
+            )
 
 
 def _load_yaml(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -299,7 +385,7 @@ def resolve_config(
             values[key] = value
             sources[key] = "CLI option"
 
-    _validate(values)
+    _validate(values, require_provider_settings=True)
     _resolve_paths(values, current_directory)
     return ResolvedConfig(
         values=values,

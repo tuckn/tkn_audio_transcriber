@@ -4,15 +4,17 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tkn-audio-transcriber"
-version = "0.3.0"
-description = "A resumable local CLI for transcribing audio or video with ffmpeg and faster-whisper."
+version = "0.4.0"
+description = "A resumable CLI for local or Azure Speech transcription of audio and video."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
 authors = [{ name = "Tuckn" }]
 dependencies = [
+  "azure-identity>=1.25.0,<2",
   "faster-whisper>=1.1.0,<2",
   "huggingface-hub>=0.30.0,<2",
+  "httpx>=0.28.1,<1",
   "PyYAML>=6.0.2,<7",
 ]
 
@@ -29,6 +31,9 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/audio_transcriber"]
+
+[tool.hatch.build]
+exclude = ["src/audio_transcriber/resources/config.example.yaml"]
 
 [tool.pytest.ini_options]
 addopts = "-q"

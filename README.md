@@ -2,35 +2,36 @@
 
 [日本語](README_ja.md)
 
-`tkn_audio_transcriber` is a local CLI that turns an audio file, or the audio stream
+`tkn_audio_transcriber` is a CLI that turns an audio file, or the audio stream
 inside a video file, into a Markdown transcript, SRT subtitles, JSONL segments, and a
-provenance manifest. It uses
-`ffmpeg` for mono/16 kHz normalization and chunking, then `faster-whisper` for
-speech recognition.
+provenance manifest. It uses `ffmpeg` for mono/16 kHz normalization, then runs either
+local `faster-whisper` (the default) or Azure Speech Fast Transcription.
 
 The source media file is opened read-only and is never moved, deleted, or overwritten.
 The CLI verifies its SHA-256 hash again before committing outputs. Meeting-note
-summarization, terminology correction, speaker diarization, and generative AI are
-intentionally outside this repository.
+summarization, terminology correction, and general-purpose generative AI are
+intentionally outside this repository. Azure Speech can optionally add speaker labels.
 
 ## Script, speech-recognition model, and generative-AI boundary
 
 A script alone cannot turn speech into text. The script orchestrates audio conversion,
 chunking, resume, validation, and output; an automatic speech-recognition (ASR) model
-performs the actual speech-to-text inference. This CLI uses local `faster-whisper`, a
-Whisper-family ASR model.
+performs the actual speech-to-text inference. The `provider` setting selects local
+`faster-whisper`, a Whisper-family ASR model, or Azure Speech Fast Transcription.
 
-After the model has been downloaded, normal transcription does not require Codex,
-Copilot, the OpenAI API, or another generative-AI service. Whisper is itself a machine-
-learning model, but this pipeline does not send audio or transcript text to a general-
-purpose LLM or API.
+The local provider does not upload audio after its model has been downloaded. The Azure
+provider uploads one derived mono/16 kHz WAV only after the command includes
+`--allow-cloud-upload`. Neither provider sends audio or transcript text to a
+general-purpose LLM.
 
 The boundary is:
 
-- `ffmpeg`: extract the first audio stream, convert it to mono 16 kHz WAV, and split it
-  into chunks; video frames are ignored
+- `ffmpeg`: extract the first audio stream and convert it to mono 16 kHz WAV; video
+  frames are ignored
 - Python code: manage jobs, resume, heartbeat, validation, and output artifacts
-- `faster-whisper`: convert each audio chunk into text
+- `faster-whisper`: convert local audio chunks into text
+- Azure Speech Fast Transcription: transcribe one complete normalized WAV and optionally
+  identify speakers
 - optional generative AI or a person: summarize, organize topics, correct domain terms,
   and polish prose downstream
 
@@ -42,7 +43,9 @@ That final downstream stage is not part of the base CLI.
 - Python 3.12 or newer
 - [`uv`](https://docs.astral.sh/uv/)
 - `ffmpeg` available on `PATH`, or an absolute `ffmpeg_executable` in config
-- Enough disk space for a mono 16 kHz WAV and split chunks while a job is running
+- Enough disk space for a mono 16 kHz WAV, plus split chunks for the local provider
+- For Azure: an Entra identity with the Speech User role and network access to the
+  configured Speech endpoint
 
 There is no extension allowlist. Any local audio or video file that `ffmpeg` can decode
 and that contains at least one audio stream is accepted. This includes common inputs
@@ -95,7 +98,7 @@ The real `./.tkn/config.yaml` is ignored by Git. Transcript outputs default to
 the current working directory. The equivalent explicit setting is:
 
 ```yaml
-schema_version: "1.0.0"
+schema_version: "1.1.0"
 output_dir: .
 ```
 
@@ -139,6 +142,61 @@ as the output directory:
 ```console
 tkn-audio-transcriber transcribe "C:\path\to\meeting.flac" --dry-run
 ```
+
+## Azure Speech Fast Transcription
+
+Keep real resource names in a user or ignored working-directory config. A committed
+example should use placeholders. The values below reflect the supported MVP contract;
+replace only the endpoint placeholder with your own resource endpoint.
+
+```yaml
+schema_version: "1.1.0"
+provider: azure-speech-fast
+azure_speech_endpoint: https://<speech-resource-name>.cognitiveservices.azure.com/
+azure_speech_region: japaneast
+azure_speech_api_version: "2025-10-15"
+azure_speech_locale: ja-JP
+azure_speech_diarization_enabled: true
+azure_speech_max_speakers: 8
+azure_speech_timeout_seconds: 600
+azure_speech_max_retries: 3
+```
+
+Preview is completely local: it does not create credentials, get a token, call Azure,
+download a model, invoke `ffmpeg`, or create output/state/cache/report/temporary files.
+It reports the planned provider, endpoint type, region, API version, locale, and whether
+cloud approval is required.
+
+```console
+tkn-audio-transcriber --config "C:\path\to\azure.yaml" transcribe ^
+  "C:\path\to\meeting.mp4" --dry-run
+```
+
+An actual Azure run requires an approval flag that cannot be saved in YAML:
+
+```console
+tkn-audio-transcriber --config "C:\path\to\azure.yaml" transcribe ^
+  "C:\path\to\meeting.mp4" --allow-cloud-upload
+```
+
+The CLI cannot determine a recording's confidentiality classification. The operator is
+responsible for confirming that the selected input is permitted for cloud processing
+before adding the flag. Azure charges can begin when the normalized audio POST is
+submitted; dry-run, hashing, and local normalization do not call the Speech API.
+
+Authentication uses `DefaultAzureCredential` and the Cognitive Services token scope.
+Subscription keys are unsupported. The CLI never runs `az login` or interactive browser
+authentication. Sign in beforehand with an approved Entra method. The normalized WAV
+must be shorter than two hours and smaller than 250 MB; both limits are checked before
+credential or HTTP client creation. Azure receives no video frames and no local chunks.
+
+Automatic retries are limited to 429, retryable 5xx responses, pre-upload connection
+failures, and transport failures for which the audio stream is confirmed incomplete.
+`Retry-After` is honored. HTTP 400/401/403/413 are not retried. If the upload may have
+completed but no response arrived, the command stops with `submission_outcome_unknown`
+instead of risking a duplicate paid request.
+Azure errors never fall back to `faster-whisper`; select the local provider explicitly
+if a separate local run is desired.
 
 ## Commands
 
@@ -190,9 +248,10 @@ tkn-audio-transcriber model download medium --model-dir "D:\models"
 
 ### `transcribe`
 
-The command validates and hashes the source, normalizes a derived copy, creates
-chunks, resumes any matching checkpoint, recognizes speech, verifies the source
-is unchanged, then commits validated outputs.
+The command validates and hashes the source, normalizes a derived copy, recognizes
+speech with the selected provider, verifies the source is unchanged, then commits
+validated outputs. Local mode creates resumable chunks; Azure mode sends the complete
+normalized WAV in one request.
 
 For a video file, `ffmpeg` selects the first audio stream (`0:a:0`) and discards the
 video stream. The original video remains unchanged, and output names use its file stem.
@@ -218,8 +277,11 @@ Important safety options:
   without it the command stops
 - `--keep-working-files`: retain the normalized WAV and chunks after successful
   verification; checkpoints are always retained for audit/resume
+- `--allow-cloud-upload`: approve an Azure upload for this invocation only; it is never
+  read from configuration
 
-If the configured known model (`tiny`, `base`, `small`, `medium`, or `large-v3`)
+With `provider: faster-whisper`, if the configured known model (`tiny`, `base`, `small`,
+`medium`, or `large-v3`)
 is missing, the command downloads it automatically before audio processing.
 `--dry-run` never downloads a model. If a run is interrupted, repeat the same
 `transcribe` command; completed chunks are skipped.
@@ -265,6 +327,8 @@ is alive; it is not a hard ASR timeout.
 
 Checks manifest schema plus the size and SHA-256 of every output. Add
 `--verify-source` to re-hash the original recording as well.
+New runs write manifest schema 2, including provider/authentication/API provenance;
+validation remains compatible with existing schema 1 manifests.
 
 ```console
 tkn-audio-transcriber validate "C:\path\to\meeting_transcript.manifest.json"
@@ -288,9 +352,9 @@ The four files share one basename and form a single output set:
 | File | Purpose |
 | --- | --- |
 | `*_transcript.md` | Primary human-readable transcript. Its YAML Frontmatter records the source, model, engine, language, speaker-separation status, chunk length, transcriber name, and transcriber version. The body contains timestamped transcript text. Start with this file for reading, review, or downstream summarization. |
-| `*_transcript.srt` | Standard subtitle file for media players and video editors. Each cue contains a sequence number, time range, and recognized text. |
-| `*_transcript.jsonl` | Machine-readable segment data with one JSON object per line. Each segment contains `index`, `start`, `end`, `text`, and the source `chunk`; use it for scripts, analysis, or alternate rendering. |
-| `*_transcript.manifest.json` | Provenance and validation record. It stores the source path and hash, decoded-audio checks, model and settings, and each output's size and SHA-256. Pass this file to `validate` and keep it with the other three outputs. |
+| `*_transcript.srt` | Standard subtitle file for media players and video editors. Azure cues include a speaker label when returned; local output is unchanged. |
+| `*_transcript.jsonl` | Machine-readable segment data with one JSON object per line. Azure segments add optional `speaker`; local records retain the existing fields. |
+| `*_transcript.manifest.json` | Schema 2 provenance and validation record. It stores provider, API version, region, locale, diarization, Entra method, source hash, decoded duration, attempts/retries, tool version, and output hashes. It never stores a token or Authorization header. |
 
 Application-managed runtime data is separated by role:
 
@@ -337,16 +401,16 @@ Every file is validated before merging, and `schema_version` is source metadata,
 not an overridable setting. `config show` reports the source selected for every
 value and the schema status of every source.
 
-Application-owned configuration uses the independent schema version `"1.0.0"`.
+Application-owned configuration uses the independent schema version `"1.1.0"`.
 The three-part string is required. This reader accepts versions in the current
-Major through Minor `0`, including newer Patch versions such as `"1.0.7"` because
+Major through Minor `1`, including newer Patch versions such as `"1.1.7"` because
 Patch changes do not alter structure. It rejects newer Minor or Major versions,
 older Major versions without a tested migration, malformed versions, and missing
 versions with an actionable error.
 
-The former integer `schema_version: 1` remains readable through an in-memory
-migration and emits a warning; reading never rewrites a file. Run `config migrate`
-to persist `schema_version: "1.0.0"` with validation, backup, and atomic replacement.
+Version `1.0.x` and the former integer `schema_version: 1` remain readable through an
+in-memory migration and emit a warning; reading never rewrites a file. Run `config migrate`
+to persist `schema_version: "1.1.0"` with validation, backup, and atomic replacement.
 
 ## Scheduled operation
 
@@ -357,11 +421,17 @@ errors, `130` for interruption, and `1` for unexpected failures.
 
 ## Limitations and privacy
 
-- No speaker diarization
+- Speaker diarization is available only with Azure Speech; local `faster-whisper`
+  output remains unlabeled
 - No meeting summary or generative-AI call
 - No automatic terminology correction
 - The first run for a missing model requires access to Hugging Face; use
   `model download` in advance for an offline transcription machine
+- Azure mode sends derived audio to the configured Speech resource and can incur Azure
+  charges. Review the source, run `--dry-run`, then explicitly approve each real upload
+- Logs and Azure errors contain only safe diagnostics such as status, Azure error code,
+  request ID, and attempt counts; they do not record audio, transcript text, bearer
+  tokens, authorization headers, or request/response bodies
 - `faster-whisper` runs in-process, so its recognition phase does not have the
   external-process timeout used for `ffmpeg`; heartbeat is available, but the current
   chunk cannot yet be forcibly cancelled from another command
@@ -378,5 +448,5 @@ uv run mypy src
 uv build
 ```
 
-Tests use synthetic files and fake speech-recognition/ffmpeg adapters. They do
-not download a model or modify a real recording.
+Tests use synthetic files and fake credentials, HTTP clients, speech-recognition, and
+`ffmpeg` adapters. They do not call Azure, download a model, or modify a real recording.

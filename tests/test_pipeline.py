@@ -9,8 +9,10 @@ import pytest
 import yaml
 
 from audio_transcriber import __version__
+from audio_transcriber.audio_integrity import WavInfo
+from audio_transcriber.azure_speech_adapter import AzureTranscription
 from audio_transcriber.config import ResolvedConfig, resolve_config
-from audio_transcriber.errors import ValidationError
+from audio_transcriber.errors import AzureSpeechError, CloudUploadApprovalError, ValidationError
 from audio_transcriber.io_utils import sha256_file
 from audio_transcriber.models import Segment
 from audio_transcriber.pipeline import TranscriptionPipeline
@@ -72,6 +74,29 @@ class FakeRecognizer:
         )
 
 
+class FakeAzureRecognizer:
+    def __init__(self, calls: list[str]) -> None:
+        self.calls = calls
+
+    def transcribe(self, normalized_audio: Path) -> AzureTranscription:
+        self.calls.append(normalized_audio.name)
+        return AzureTranscription(
+            segments=[
+                Segment(
+                    index=1,
+                    start=0.1,
+                    end=1.2,
+                    text="Azure text",
+                    chunk="azure-whole-file",
+                    speaker="1",
+                )
+            ],
+            attempts=2,
+            retries=1,
+            request_id="request-123",
+        )
+
+
 def make_config(tmp_path: Path) -> ResolvedConfig:
     model_dir = tmp_path / "models"
     model = model_dir / "faster-whisper-small"
@@ -87,6 +112,19 @@ def make_config(tmp_path: Path) -> ResolvedConfig:
             "model_dir": str(model_dir),
             "cache_dir": str(tmp_path / "cache"),
             "chunk_seconds": 10,
+        },
+    )
+
+
+def make_azure_config(tmp_path: Path) -> ResolvedConfig:
+    return resolve_config(
+        cwd=tmp_path,
+        home=tmp_path / "home",
+        cli_overrides={
+            "provider": "azure-speech-fast",
+            "azure_speech_endpoint": "https://example.cognitiveservices.azure.com/",
+            "output_dir": str(tmp_path / "outputs"),
+            "state_dir": str(tmp_path / "state"),
         },
     )
 
@@ -183,12 +221,19 @@ def test_end_to_end_commit_validate_unchanged_and_source_immutability(
     before = sha256_file(source)
     ffmpeg_calls: list[str] = []
     recognition_calls: list[str] = []
+    azure_factory_calls: list[str] = []
     config = make_config(tmp_path)
+
+    def azure_factory(config: ResolvedConfig, logger: logging.Logger) -> FakeAzureRecognizer:
+        azure_factory_calls.append("created")
+        return FakeAzureRecognizer([])
+
     pipeline = TranscriptionPipeline(
         config=config,
         logger=make_logger(),
         ffmpeg=FakeFfmpeg(ffmpeg_calls),  # type: ignore[arg-type]
         recognizer_factory=lambda model, cfg: FakeRecognizer(recognition_calls),
+        azure_recognizer_factory=azure_factory,
     )
     result = pipeline.transcribe(source, dry_run=False, overwrite=False)
     assert result.status == "created"
@@ -215,6 +260,9 @@ def test_end_to_end_commit_validate_unchanged_and_source_immutability(
     assert "- Source:" not in markdown
     manifest = json.loads(result.outputs.manifest.read_text(encoding="utf-8"))
     assert manifest["decoded_audio"]["duration_seconds"] == 20.0
+    local_jsonl = json.loads(result.outputs.jsonl.read_text(encoding="utf-8").splitlines()[0])
+    assert "speaker" not in local_jsonl
+    assert azure_factory_calls == []
     job_files = list((tmp_path / "state" / "jobs").glob("*/job.json"))
     assert json.loads(job_files[0].read_text(encoding="utf-8"))["status"] == "completed"
 
@@ -271,3 +319,253 @@ def test_different_existing_output_requires_overwrite(tmp_path: Path) -> None:
         make().transcribe(source, dry_run=False, overwrite=False)
     replaced = make().transcribe(source, dry_run=False, overwrite=True)
     assert replaced.status == "replaced"
+
+
+def test_azure_dry_run_never_creates_clients_or_writes(tmp_path: Path) -> None:
+    source = tmp_path / "meeting.mp4"
+    source.write_bytes(b"video container")
+    ffmpeg_calls: list[str] = []
+    azure_factory_calls: list[str] = []
+
+    def azure_factory(config: ResolvedConfig, logger: logging.Logger) -> FakeAzureRecognizer:
+        azure_factory_calls.append("created")
+        return FakeAzureRecognizer([])
+
+    result = TranscriptionPipeline(
+        config=make_azure_config(tmp_path),
+        logger=make_logger(),
+        ffmpeg=FakeFfmpeg(ffmpeg_calls),  # type: ignore[arg-type]
+        azure_recognizer_factory=azure_factory,
+    ).transcribe(source, dry_run=True, overwrite=False)
+
+    assert result.status == "planned"
+    assert result.plan == {
+        "provider": "azure-speech-fast",
+        "endpoint_type": "azure-custom-subdomain",
+        "region": "japaneast",
+        "api_version": "2025-10-15",
+        "locale": "ja-JP",
+        "diarization_enabled": True,
+        "cloud_upload_approval_required": True,
+        "cloud_upload_approved": False,
+        "network_calls": 0,
+        "normalized_audio_validation": {
+            "status": "deferred_until_actual_run",
+            "duration_must_be_less_than_seconds": 7200,
+            "size_must_be_less_than_bytes": 250_000_000,
+        },
+    }
+    assert ffmpeg_calls == []
+    assert azure_factory_calls == []
+    assert not (tmp_path / "outputs").exists()
+    assert not (tmp_path / "state").exists()
+
+
+def test_azure_actual_run_requires_per_run_cloud_approval_before_clients(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "meeting.wav"
+    source.write_bytes(b"source")
+    ffmpeg_calls: list[str] = []
+    azure_factory_calls: list[str] = []
+
+    def azure_factory(config: ResolvedConfig, logger: logging.Logger) -> FakeAzureRecognizer:
+        azure_factory_calls.append("created")
+        return FakeAzureRecognizer([])
+
+    pipeline = TranscriptionPipeline(
+        config=make_azure_config(tmp_path),
+        logger=make_logger(),
+        ffmpeg=FakeFfmpeg(ffmpeg_calls),  # type: ignore[arg-type]
+        azure_recognizer_factory=azure_factory,
+    )
+
+    with pytest.raises(CloudUploadApprovalError, match="--allow-cloud-upload"):
+        pipeline.transcribe(source, dry_run=False, overwrite=False)
+
+    assert ffmpeg_calls == []
+    assert azure_factory_calls == []
+    assert not (tmp_path / "state").exists()
+
+
+def test_azure_whole_file_flow_preserves_speakers_and_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "town-hall.mp4"
+    source.write_bytes(b"immutable video source")
+    ffmpeg_calls: list[str] = []
+    azure_calls: list[str] = []
+
+    def reject_local_model(**kwargs: object) -> Path:
+        raise AssertionError("Azure provider must not resolve or download a local model")
+
+    monkeypatch.setattr("audio_transcriber.pipeline.ensure_local_model", reject_local_model)
+    pipeline = TranscriptionPipeline(
+        config=make_azure_config(tmp_path),
+        logger=make_logger(),
+        ffmpeg=FakeFfmpeg(ffmpeg_calls),  # type: ignore[arg-type]
+        azure_recognizer_factory=lambda config, logger: FakeAzureRecognizer(azure_calls),
+    )
+
+    result = pipeline.transcribe(
+        source,
+        dry_run=False,
+        overwrite=False,
+        allow_cloud_upload=True,
+    )
+
+    assert result.status == "created"
+    assert ffmpeg_calls == ["ensure", "normalize"]
+    assert azure_calls == ["normalized_16k_mono.wav"]
+    markdown = result.outputs.markdown.read_text(encoding="utf-8")
+    assert 'engine: "azure-speech-fast"' in markdown
+    assert "[Speaker 1] Azure text" in markdown
+    assert "Speaker 1: Azure text" in result.outputs.srt.read_text(encoding="utf-8")
+    jsonl = json.loads(result.outputs.jsonl.read_text(encoding="utf-8"))
+    assert jsonl["speaker"] == "1"
+    manifest = json.loads(result.outputs.manifest.read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == 2
+    assert manifest["provider"] == "azure-speech-fast"
+    assert manifest["provenance"] == {
+        "provider": "azure-speech-fast",
+        "api_version": "2025-10-15",
+        "region": "japaneast",
+        "locale": "ja-JP",
+        "diarization_enabled": True,
+        "authentication_method": "DefaultAzureCredential",
+        "source_sha256": sha256_file(source),
+        "decoded_duration_seconds": 20.0,
+        "attempts": 2,
+        "retries": 1,
+        "request_id": "request-123",
+        "tool_version": __version__,
+    }
+    assert manifest["model"] == {"requested": None, "resolved_path": None}
+    assert manifest["settings"]["endpoint_type"] == "azure-custom-subdomain"
+    job = json.loads(next((tmp_path / "state" / "jobs").glob("*/job.json")).read_text())
+    assert job["settings"]["azure_speech_endpoint"] == "azure-custom-subdomain"
+
+
+def test_azure_duration_limit_is_checked_before_client_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "meeting.wav"
+    source.write_bytes(b"source")
+    factory_calls: list[str] = []
+    monkeypatch.setattr(
+        "audio_transcriber.pipeline.inspect_normalized_wav",
+        lambda path: WavInfo(
+            duration_seconds=7200.0,
+            frame_count=1,
+            sample_rate=16_000,
+            channels=1,
+            sample_width=2,
+        ),
+    )
+
+    def azure_factory(config: ResolvedConfig, logger: logging.Logger) -> FakeAzureRecognizer:
+        factory_calls.append("created")
+        return FakeAzureRecognizer([])
+
+    pipeline = TranscriptionPipeline(
+        config=make_azure_config(tmp_path),
+        logger=make_logger(),
+        ffmpeg=FakeFfmpeg([]),  # type: ignore[arg-type]
+        azure_recognizer_factory=azure_factory,
+    )
+
+    with pytest.raises(ValidationError, match="shorter than 2 hours"):
+        pipeline.transcribe(
+            source,
+            dry_run=False,
+            overwrite=False,
+            allow_cloud_upload=True,
+        )
+
+    assert factory_calls == []
+    normalized = next((tmp_path / "state" / "jobs").glob("*/normalized_16k_mono.wav"))
+    assert normalized.is_file()
+
+
+def test_azure_size_limit_is_checked_before_client_creation(tmp_path: Path) -> None:
+    source = tmp_path / "meeting.wav"
+    source.write_bytes(b"source")
+    factory_calls: list[str] = []
+
+    class OversizeFfmpeg(FakeFfmpeg):
+        def normalize(self, source: Path, destination: Path) -> None:
+            super().normalize(source, destination)
+            with destination.open("r+b") as stream:
+                stream.seek(250_000_000 - 1)
+                stream.write(b"\0")
+
+    def azure_factory(config: ResolvedConfig, logger: logging.Logger) -> FakeAzureRecognizer:
+        factory_calls.append("created")
+        return FakeAzureRecognizer([])
+
+    pipeline = TranscriptionPipeline(
+        config=make_azure_config(tmp_path),
+        logger=make_logger(),
+        ffmpeg=OversizeFfmpeg([]),  # type: ignore[arg-type]
+        azure_recognizer_factory=azure_factory,
+    )
+
+    with pytest.raises(ValidationError, match="smaller than 250 MB"):
+        pipeline.transcribe(
+            source,
+            dry_run=False,
+            overwrite=False,
+            allow_cloud_upload=True,
+        )
+
+    assert factory_calls == []
+
+
+def test_provider_changes_fingerprint(tmp_path: Path) -> None:
+    source = tmp_path / "meeting.wav"
+    source.write_bytes(b"source")
+    local = TranscriptionPipeline(
+        config=make_config(tmp_path),
+        logger=make_logger(),
+        ffmpeg=FakeFfmpeg([]),  # type: ignore[arg-type]
+    ).transcribe(source, dry_run=True, overwrite=False)
+    azure = TranscriptionPipeline(
+        config=make_azure_config(tmp_path),
+        logger=make_logger(),
+        ffmpeg=FakeFfmpeg([]),  # type: ignore[arg-type]
+    ).transcribe(source, dry_run=True, overwrite=False)
+
+    assert local.fingerprint != azure.fingerprint
+
+
+def test_azure_failure_never_falls_back_to_local(tmp_path: Path) -> None:
+    source = tmp_path / "meeting.wav"
+    source.write_bytes(b"source")
+    local_factory_calls: list[str] = []
+
+    class FailingAzureRecognizer:
+        def transcribe(self, normalized_audio: Path) -> AzureTranscription:
+            raise AzureSpeechError("safe Azure failure")
+
+    def local_factory(model: Path, config: ResolvedConfig) -> FakeRecognizer:
+        local_factory_calls.append("created")
+        return FakeRecognizer([])
+
+    pipeline = TranscriptionPipeline(
+        config=make_azure_config(tmp_path),
+        logger=make_logger(),
+        ffmpeg=FakeFfmpeg([]),  # type: ignore[arg-type]
+        recognizer_factory=local_factory,
+        azure_recognizer_factory=lambda config, logger: FailingAzureRecognizer(),
+    )
+
+    with pytest.raises(AzureSpeechError, match="safe Azure failure"):
+        pipeline.transcribe(
+            source,
+            dry_run=False,
+            overwrite=False,
+            allow_cloud_upload=True,
+        )
+
+    assert local_factory_calls == []
+    assert not (tmp_path / "outputs").exists()
