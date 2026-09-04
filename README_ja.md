@@ -122,6 +122,8 @@ tkn-audio-transcriber --profile local/gpu-quality transcribe "C:\path\to\meeting
 ```
 
 初回文字起こし時に既知のモデルがなければ、Hugging Faceから自動ダウンロードします。
+組み込みモデルは公開されているため、Hugging Faceのアカウント、ログイン、利用申請・
+同意は不要です。インターネット接続が必要なのは初回ダウンロード時だけです。モデルを
 事前に取得しておくこともできます。
 
 ```console
@@ -361,12 +363,12 @@ heartbeatは既定60秒です。`--heartbeat-seconds`または設定fileで変�
 
 manifest schemaと、全出力のfile size・SHA-256を検証します。
 `--verify-source`を付けると元メディアも再度hash検証します。
-新規実行はprovider・認証・API provenanceを含むmanifest schema 2を書きますが、
-既存schema 1 manifestも引き続き検証できます。
+新規実行は選択profile・provider・認証・API provenanceを含むmanifest schema 3を
+書きますが、既存schema 1・2 manifestも引き続き検証できます。
 
 ```powershell
-tkn-audio-transcriber validate "C:\path\to\meeting_transcript.manifest.json"
-tkn-audio-transcriber validate "C:\path\to\meeting_transcript.manifest.json" `
+tkn-audio-transcriber validate "C:\path\to\meeting__local__local-small_transcript.manifest.json"
+tkn-audio-transcriber validate "C:\path\to\meeting__local__local-small_transcript.manifest.json" `
   --verify-source
 ```
 
@@ -375,20 +377,23 @@ tkn-audio-transcriber validate "C:\path\to\meeting_transcript.manifest.json" `
 `meeting.flac`の場合、選択した出力先に次を作成します。
 
 ```text
-meeting_transcript.md
-meeting_transcript.srt
-meeting_transcript.jsonl
-meeting_transcript.manifest.json
+meeting__local__local-small_transcript.md
+meeting__local__local-small_transcript.srt
+meeting__local__local-small_transcript.jsonl
+meeting__local__local-small_transcript.manifest.json
 ```
 
 4つのfileは同じbasenameを持つ、1組の出力成果物です。
+`__local__local-small`部分は選択した`MODE/PROFILE`を表すため、同じsourceを
+別profileで文字起こししても既存fileを置換しません。旧versionで作成したprofile名なしの
+出力fileは移動・上書きせず、そのまま残します。
 
 | file | 内容・用途 |
 | --- | --- |
-| `*_transcript.md` | 人が読むための主成果物です。YAML Frontmatterに元メディア、model、engine、言語、話者分離の有無、chunk秒数、transcriber名、transcriber versionを記録し、本文にtimestamp付きの文字起こしを格納します。内容確認、レビュー、後続の要約では、まずこのfileを使用します。 |
+| `*_transcript.md` | 人が読むための主成果物です。YAML Frontmatterに元メディア、選択profile、model、engine、言語、話者分離の有無、chunk秒数、transcriber名、transcriber versionを記録し、本文にtimestamp付きの文字起こしを格納します。内容確認、レビュー、後続の要約では、まずこのfileを使用します。 |
 | `*_transcript.srt` | media playerやvideo editorで利用する字幕fileです。Azureのcueは返却された場合だけ話者labelを含み、local出力は従来どおりです。 |
 | `*_transcript.jsonl` | 1行1 JSON objectのsegment dataです。Azure segmentは任意の`speaker`を追加し、local recordは従来fieldを維持します。 |
-| `*_transcript.manifest.json` | schema 2のprovenance・検証記録です。provider、API version、region、locale、話者分離、Entra方式、source hash、decode時間、試行・retry回数、tool version、output hashを格納し、tokenやAuthorization headerは保存しません。 |
+| `*_transcript.manifest.json` | schema 3のprovenance・検証記録です。選択profile、provider、API version、region、locale、話者分離、Entra方式、source hash、decode時間、試行・retry回数、tool version、output hashを格納し、tokenやAuthorization headerは保存しません。 |
 
 application管理のruntime dataは役割ごとに分離します。
 
@@ -404,7 +409,8 @@ cacheは上記のapplication管理場所へ分離したままです。すべて�
 
 ## 冪等性と失敗時の動作
 
-- 同一入力・同一設定で出力が有効: `unchanged`
+- 同一入力・同一profile・同一設定で出力が有効: `unchanged`
+- 同一入力を別profileで実行: profile名付きの別成果物一式を`created`
 - 新規作成: `created`
 - `--overwrite`で異なる出力を置換: `replaced`
 - `--overwrite`なしで異なる、または不完全な出力が存在: error

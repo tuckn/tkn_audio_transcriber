@@ -102,20 +102,22 @@ class FakeAzureRecognizer:
         )
 
 
-def make_config(tmp_path: Path) -> ResolvedConfig:
+def make_config(tmp_path: Path, *, profile: str | None = None) -> ResolvedConfig:
     model_dir = tmp_path / "models"
     model = model_dir / "faster-whisper-small"
-    model.mkdir(parents=True)
+    model.mkdir(parents=True, exist_ok=True)
     (model / "model.bin").write_bytes(b"model")
     (model / "config.json").write_text("{}", encoding="utf-8")
     return resolve_config(
         cwd=tmp_path,
         home=tmp_path / "home",
+        profile=profile,
         cli_overrides={
             "output_dir": str(tmp_path / "outputs"),
             "state_dir": str(tmp_path / "state"),
             "model_dir": str(model_dir),
             "cache_dir": str(tmp_path / "cache"),
+            "model": "small",
             "chunk_seconds": 10,
         },
     )
@@ -172,7 +174,7 @@ def test_dry_run_accepts_mp4_source(tmp_path: Path) -> None:
 
     assert result.status == "planned"
     assert result.source == source.resolve()
-    assert result.outputs.markdown.name == "town-hall_transcript.md"
+    assert result.outputs.markdown.name == "town-hall__local__local-small_transcript.md"
 
 
 def test_transcribe_ensures_missing_model_before_audio_processing(
@@ -255,6 +257,7 @@ def test_end_to_end_commit_validate_unchanged_and_source_immutability(
     _, frontmatter, body = markdown.split("---", maxsplit=2)
     assert yaml.safe_load(frontmatter) == {
         "source": "会議.flac",
+        "profile": "local/local-small",
         "model": "small",
         "engine": "faster-whisper",
         "language": "ja",
@@ -266,7 +269,16 @@ def test_end_to_end_commit_validate_unchanged_and_source_immutability(
     assert body.startswith("\n\n# 会議 Transcript\n\n## Transcript\n\n")
     assert "- Source:" not in markdown
     manifest = json.loads(result.outputs.manifest.read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == 3
+    assert manifest["provenance"]["profile"] == "local/local-small"
     assert manifest["decoded_audio"]["duration_seconds"] == 20.0
+    legacy_manifest = dict(manifest)
+    legacy_manifest["schema_version"] = 2
+    legacy_manifest["provenance"] = dict(manifest["provenance"])
+    legacy_manifest["provenance"].pop("profile")
+    legacy_manifest_path = result.outputs.manifest.with_name("legacy-schema-2.manifest.json")
+    legacy_manifest_path.write_text(json.dumps(legacy_manifest), encoding="utf-8")
+    assert validate_artifact(legacy_manifest_path, verify_source=True)["status"] == "valid"
     local_jsonl = json.loads(result.outputs.jsonl.read_text(encoding="utf-8").splitlines()[0])
     assert "speaker" not in local_jsonl
     assert azure_factory_calls == []
@@ -326,6 +338,36 @@ def test_different_existing_output_requires_overwrite(tmp_path: Path) -> None:
         make().transcribe(source, dry_run=False, overwrite=False)
     replaced = make().transcribe(source, dry_run=False, overwrite=True)
     assert replaced.status == "replaced"
+
+
+def test_different_profiles_create_distinct_outputs_without_overwrite(tmp_path: Path) -> None:
+    source = tmp_path / "meeting.wav"
+    source.write_bytes(b"source")
+
+    first = TranscriptionPipeline(
+        config=make_config(tmp_path),
+        logger=make_logger(),
+        ffmpeg=FakeFfmpeg([]),  # type: ignore[arg-type]
+        recognizer_factory=lambda model, cfg: FakeRecognizer([]),
+    ).transcribe(source, dry_run=False, overwrite=False)
+    second = TranscriptionPipeline(
+        config=make_config(tmp_path, profile="local/local-large"),
+        logger=make_logger(),
+        ffmpeg=FakeFfmpeg([]),  # type: ignore[arg-type]
+        recognizer_factory=lambda model, cfg: FakeRecognizer([]),
+    ).transcribe(source, dry_run=False, overwrite=False)
+
+    assert first.status == "created"
+    assert second.status == "created"
+    assert first.fingerprint != second.fingerprint
+    assert first.outputs.markdown.name == "meeting__local__local-small_transcript.md"
+    assert second.outputs.markdown.name == "meeting__local__local-large_transcript.md"
+    assert first.outputs.markdown.is_file()
+    assert second.outputs.markdown.is_file()
+    first_manifest = json.loads(first.outputs.manifest.read_text(encoding="utf-8"))
+    second_manifest = json.loads(second.outputs.manifest.read_text(encoding="utf-8"))
+    assert first_manifest["provenance"]["profile"] == "local/local-small"
+    assert second_manifest["provenance"]["profile"] == "local/local-large"
 
 
 def test_azure_dry_run_never_creates_clients_or_writes(tmp_path: Path) -> None:
@@ -437,10 +479,11 @@ def test_azure_whole_file_flow_preserves_speakers_and_provenance(
     jsonl = json.loads(result.outputs.jsonl.read_text(encoding="utf-8"))
     assert jsonl["speaker"] == "1"
     manifest = json.loads(result.outputs.manifest.read_text(encoding="utf-8"))
-    assert manifest["schema_version"] == 2
+    assert manifest["schema_version"] == 3
     assert manifest["provider"] == "azure-speech-fast"
     assert manifest["provenance"] == {
         "mode": "cloud",
+        "profile": "cloud/azure-ja",
         "provider": "azure-speech-fast",
         "api_version": "2025-10-15",
         "region": "japaneast",

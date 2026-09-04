@@ -7,8 +7,8 @@ from typing import Any
 from .errors import ValidationError
 from .io_utils import read_json, sha256_file
 
-MANIFEST_SCHEMA_VERSION = 2
-SUPPORTED_MANIFEST_SCHEMA_VERSIONS = {1, MANIFEST_SCHEMA_VERSION}
+MANIFEST_SCHEMA_VERSION = 3
+SUPPORTED_MANIFEST_SCHEMA_VERSIONS = {1, 2, MANIFEST_SCHEMA_VERSION}
 
 
 def _validated_file(record: Any, label: str, manifest_dir: Path) -> Path:
@@ -44,10 +44,12 @@ def validate_artifact(manifest_path: Path, *, verify_source: bool) -> dict[str, 
         raise ValidationError(
             f"Unsupported manifest schema_version: {schema_version!r}"
         )
-    if schema_version == MANIFEST_SCHEMA_VERSION:
+    if schema_version in {2, MANIFEST_SCHEMA_VERSION}:
         provenance = manifest.get("provenance")
         if not isinstance(provenance, dict):
-            raise ValidationError("Manifest provenance must be an object for schema 2")
+            raise ValidationError(
+                f"Manifest provenance must be an object for schema {schema_version}"
+            )
         required_provenance = {
             "provider",
             "api_version",
@@ -61,6 +63,8 @@ def validate_artifact(manifest_path: Path, *, verify_source: bool) -> dict[str, 
             "retries",
             "tool_version",
         }
+        if schema_version == MANIFEST_SCHEMA_VERSION:
+            required_provenance.add("profile")
         missing = sorted(required_provenance - set(provenance))
         if missing:
             raise ValidationError(

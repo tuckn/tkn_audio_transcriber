@@ -146,6 +146,7 @@ def test_transcribe_dry_run_defaults_output_to_current_working_directory(
     payload = json.loads(captured.out)
     assert payload["status"] == "planned"
     assert Path(payload["outputs"]["markdown"]).parent == tmp_path.resolve()
+    assert payload["outputs"]["markdown"].endswith("audio__local__local-small_transcript.md")
     assert payload["plan"]["provider"] == "faster-whisper"
 
 
@@ -172,6 +173,7 @@ def test_profile_switches_transcription_model_for_dry_run(
     assert payload["plan"]["mode"] == "local"
     assert payload["plan"]["profile"] == "local/local-large"
     assert payload["plan"]["provider"] == "faster-whisper"
+    assert payload["outputs"]["markdown"].endswith("audio__local__local-large_transcript.md")
 
 
 def test_azure_profile_dry_run_does_not_require_upload_approval(

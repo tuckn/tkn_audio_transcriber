@@ -107,6 +107,7 @@ def _fingerprint(source_hash: str, source_size: int, config: ResolvedConfig) -> 
         "source_sha256": source_hash,
         "source_size": source_size,
         "tool_version": __version__,
+        "profile": config.profile_selector,
         "settings": _fingerprint_settings(config),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -164,6 +165,7 @@ def _render_markdown(source: Path, config: ResolvedConfig, segments: list[Segmen
     lines = [
         "---",
         f"source: {json.dumps(source.name, ensure_ascii=False)}",
+        f"profile: {json.dumps(config.profile_selector, ensure_ascii=False)}",
         f"model: {json.dumps(model, ensure_ascii=False)}",
         f"engine: {json.dumps(transcription.provider)}",
         f"language: {json.dumps(language, ensure_ascii=False)}",
@@ -315,7 +317,12 @@ class TranscriptionPipeline:
         self.logger.info("Hashing source media: %s", source_path)
         source_hash = sha256_file(source_path)
         fingerprint = _fingerprint(source_hash, source_stat.st_size, self.config)
-        outputs = output_paths(output_dir, source_path)
+        outputs = output_paths(
+            output_dir,
+            source_path,
+            mode=self.config.active_mode,
+            profile=self.config.active_profile,
+        )
 
         if outputs.manifest.exists():
             try:
@@ -613,6 +620,7 @@ class TranscriptionPipeline:
                 model_requested = None
             provenance: dict[str, object] = {
                 "mode": transcription.mode,
+                "profile": self.config.profile_selector,
                 "provider": transcription.provider,
                 "api_version": api_version,
                 "region": region,

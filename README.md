@@ -130,7 +130,9 @@ tkn-audio-transcriber --profile local/gpu-quality transcribe "C:\path\to\meeting
 ```
 
 On the first transcription, a missing known model is downloaded automatically
-from Hugging Face. You can also download it in advance:
+from Hugging Face. The built-in models are public, so no Hugging Face account,
+login, or access agreement is required. An internet connection is needed only
+for the initial download. You can also download a model in advance:
 
 ```console
 tkn-audio-transcriber model download small
@@ -383,12 +385,13 @@ is alive; it is not a hard ASR timeout.
 
 Checks manifest schema plus the size and SHA-256 of every output. Add
 `--verify-source` to re-hash the original recording as well.
-New runs write manifest schema 2, including provider/authentication/API provenance;
-validation remains compatible with existing schema 1 manifests.
+New runs write manifest schema 3, including selected-profile and
+provider/authentication/API provenance; validation remains compatible with existing
+schema 1 and 2 manifests.
 
 ```console
-tkn-audio-transcriber validate "C:\path\to\meeting_transcript.manifest.json"
-tkn-audio-transcriber validate "C:\path\to\meeting_transcript.manifest.json" ^
+tkn-audio-transcriber validate "C:\path\to\meeting__local__local-small_transcript.manifest.json"
+tkn-audio-transcriber validate "C:\path\to\meeting__local__local-small_transcript.manifest.json" ^
   --verify-source
 ```
 
@@ -397,20 +400,23 @@ tkn-audio-transcriber validate "C:\path\to\meeting_transcript.manifest.json" ^
 For `meeting.flac`, the selected output directory receives:
 
 ```text
-meeting_transcript.md
-meeting_transcript.srt
-meeting_transcript.jsonl
-meeting_transcript.manifest.json
+meeting__local__local-small_transcript.md
+meeting__local__local-small_transcript.srt
+meeting__local__local-small_transcript.jsonl
+meeting__local__local-small_transcript.manifest.json
 ```
 
-The four files share one basename and form a single output set:
+The four files share one basename and form a single output set. The
+`__local__local-small` portion records the selected `MODE/PROFILE`, so the same
+source can be transcribed with another profile without replacing these files.
+Existing profile-less output files from earlier versions are left untouched.
 
 | File | Purpose |
 | --- | --- |
-| `*_transcript.md` | Primary human-readable transcript. Its YAML Frontmatter records the source, model, engine, language, speaker-separation status, chunk length, transcriber name, and transcriber version. The body contains timestamped transcript text. Start with this file for reading, review, or downstream summarization. |
+| `*_transcript.md` | Primary human-readable transcript. Its YAML Frontmatter records the source, selected profile, model, engine, language, speaker-separation status, chunk length, transcriber name, and transcriber version. The body contains timestamped transcript text. Start with this file for reading, review, or downstream summarization. |
 | `*_transcript.srt` | Standard subtitle file for media players and video editors. Azure cues include a speaker label when returned; local output is unchanged. |
 | `*_transcript.jsonl` | Machine-readable segment data with one JSON object per line. Azure segments add optional `speaker`; local records retain the existing fields. |
-| `*_transcript.manifest.json` | Schema 2 provenance and validation record. It stores provider, API version, region, locale, diarization, Entra method, source hash, decoded duration, attempts/retries, tool version, and output hashes. It never stores a token or Authorization header. |
+| `*_transcript.manifest.json` | Schema 3 provenance and validation record. It stores the selected profile, provider, API version, region, locale, diarization, Entra method, source hash, decoded duration, attempts/retries, tool version, and output hashes. It never stores a token or Authorization header. |
 
 Application-managed runtime data is separated by role:
 
@@ -426,7 +432,8 @@ in all config sources are resolved from the current working directory.
 
 ## Idempotency and failure behavior
 
-- Same input and transcription settings with valid outputs: `unchanged`
+- Same input, profile, and transcription settings with valid outputs: `unchanged`
+- Same input with a different profile: a separate profile-named output set is `created`
 - New outputs: `created`
 - Differing outputs with `--overwrite`: `replaced`
 - Differing or incomplete outputs without `--overwrite`: error
