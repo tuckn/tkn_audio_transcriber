@@ -57,6 +57,32 @@ such as `.wav`, `.flac`, `.mp3`, `.m4a`, and `.mp4`.
 CPU use with the `small` model is the recommended first run. `medium` generally
 improves recognition at the cost of more memory and processing time.
 
+### Reference CPU benchmark
+
+Measured on 2026-09-04 with tkn-audio-transcriber 0.7.0 and faster-whisper,
+using a 758.8-second (12:38.8) Japanese conversational FLAC. All runs used CPU,
+`compute_type: int8`, `language: ja`, and `chunk_seconds: 600` on a Dell
+Latitude 7340 with an Intel Core i7-1365U (10 physical cores / 12 logical
+processors), 31.6 GB RAM, and no CUDA GPU.
+
+| Profile | Model | `beam_size` | Elapsed | Segments | Indicative quality |
+| --- | --- | ---: | ---: | ---: | --- |
+| `local-small` | `small` | 1 | 3m24s | 167 | Lower accuracy; suitable for quick review and search |
+| `local-large` | `large-v3` | 1 | ~17m43s[^cpu-benchmark-resume] | 270 | Practical accuracy |
+| `local-quality` (custom) | `large-v3` | 3 | 34m26s | 267 | Best of these runs, but only slightly better than beam 1 |
+
+`local-quality` was a custom test profile, not a packaged profile. Quality was
+judged by manual listening without a ground-truth transcript, so these
+assessments are indicative rather than reproducible accuracy scores. Machine
+load, thermals, model cache state, audio, and application/model versions affect
+timings. In this comparison, moving from `small` to `large-v3` produced the
+major quality gain; increasing the beam from 1 to 3 roughly doubled elapsed
+time for only a modest additional gain.
+
+[^cpu-benchmark-resume]: Approximate cumulative active time: a 17m16s initial
+    run reached a validation failure, followed by a 27s resume after the
+    timestamp-validation fix. This was not a clean single-run benchmark.
+
 ## Install
 
 From the repository root:

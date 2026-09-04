@@ -51,6 +51,31 @@ Transcriptionという実装を表します。
 最初はCPUと`small`モデルを推奨します。`medium`は一般に認識精度が上がる一方、
 メモリ使用量と処理時間が増えます。
 
+### CPU参考ベンチマーク
+
+2026-09-04に、758.8秒（12:38.8）の日本語会話FLACを使用して測定しました。
+tkn-audio-transcriber 0.7.0とfaster-whisperを使用し、全実行でCPU、
+`compute_type: int8`、`language: ja`、`chunk_seconds: 600`を指定しました。
+PCはDell Latitude 7340、Intel Core i7-1365U（物理10コア／論理12プロセッサ）、
+メモリ31.6 GBで、CUDA GPUはありません。
+
+| profile | model | `beam_size` | 経過時間 | segment数 | 参考品質 |
+| --- | --- | ---: | ---: | ---: | --- |
+| `local-small` | `small` | 1 | 3分24秒 | 167 | 精度は低め。簡易確認や検索向け |
+| `local-large` | `large-v3` | 1 | 約17分43秒[^cpu-benchmark-resume] | 270 | 実用的な精度 |
+| `local-quality`（独自設定） | `large-v3` | 3 | 34分26秒 | 267 | 今回では最良だが、beam 1との差はわずか |
+
+`local-quality`は測定用の独自profileであり、同梱profileではありません。品質は
+正解transcriptなしの手動確認によるため、再現可能な精度scoreではなく参考評価です。
+処理時間はmachine負荷、温度、model cacheの状態、音声、application/modelのversionに
+左右されます。今回の比較では、`small`から`large-v3`への変更が大きな品質向上を
+もたらしました。一方、beamを1から3に増やすと、わずかな品質向上に対して経過時間は
+ほぼ2倍になりました。
+
+[^cpu-benchmark-resume]: 約17分43秒は、validation failureまで進んだ最初の17分16秒と、
+    timestamp validation修正後の再開27秒を合計した概算の稼働時間です。単一の
+    clean runによる測定ではありません。
+
 ## インストール
 
 リポジトリのルートで実行します。
