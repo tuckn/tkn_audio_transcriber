@@ -344,6 +344,20 @@ is missing, the command downloads it automatically before audio processing.
 `--dry-run` never downloads a model. If a run is interrupted, repeat the same
 `transcribe` command; completed chunks are skipped.
 
+`chunk_seconds` (`--chunk-seconds` on the CLI) is a positive integer that controls how
+often the normalized WAV is split in local mode. It defaults to `600` seconds (10
+minutes) and is not used in Azure mode. Shorter chunks create checkpoints more often and
+reduce the amount repeated after an interruption, but increase splitting, recognition,
+and persistence overhead. Longer chunks reduce that overhead but increase the amount
+repeated when processing stops partway through a chunk. Omitting the setting does not
+disable chunking or make processing faster; it uses the `600`-second default.
+
+Use `600` for typical recordings. About `300` seconds can suit unstable environments or
+frequent interruptions, while `900` to `1800` seconds can suit a stable GPU environment
+where less frequent checkpoints are preferred. The value mainly trades processing
+overhead against resumability, but chunks do not overlap, so values that are too short
+can split words or sentences at boundaries and increase omissions or recognition errors.
+
 Before processing, the CLI estimates scratch-space needs. After normalization, it
 checks the actual WAV size before creating chunks. It refuses to commit final output if
 the normalized WAV format is invalid or total chunk duration differs from decoded audio.
