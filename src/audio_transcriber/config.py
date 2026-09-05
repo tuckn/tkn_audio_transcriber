@@ -49,7 +49,10 @@ DEFAULTS: dict[str, Any] = {
     "azure_speech_region": "japaneast",
     "azure_speech_api_version": "2025-10-15",
     "azure_speech_locale": "ja-JP",
-    "azure_speech_diarization_enabled": True,
+    "azure_speech_diarization_enabled": False,
+    "azure_speech_profanity_filter_mode": "None",
+    "azure_speech_phrases": [],
+    "azure_speech_reuse_cached_credentials": True,
     "azure_speech_max_speakers": 8,
     "azure_speech_timeout_seconds": 600,
     "azure_speech_max_retries": 3,
@@ -76,6 +79,9 @@ EXPECTED_TYPES: dict[str, type[Any] | tuple[type[Any], ...]] = {
     "azure_speech_api_version": str,
     "azure_speech_locale": str,
     "azure_speech_diarization_enabled": bool,
+    "azure_speech_profanity_filter_mode": str,
+    "azure_speech_phrases": list,
+    "azure_speech_reuse_cached_credentials": bool,
     "azure_speech_max_speakers": int,
     "azure_speech_timeout_seconds": int,
     "azure_speech_max_retries": int,
@@ -83,6 +89,9 @@ EXPECTED_TYPES: dict[str, type[Any] | tuple[type[Any], ...]] = {
 
 PATH_KEYS = {"output_dir", "model_dir", "cache_dir", "state_dir"}
 AZURE_SETTING_KEYS = {
+    "azure_speech_profanity_filter_mode",
+    "azure_speech_phrases",
+    "azure_speech_reuse_cached_credentials",
     "azure_speech_endpoint",
     "azure_speech_region",
     "azure_speech_api_version",
@@ -106,7 +115,10 @@ AZURE_PROFILE_DEFAULTS: dict[str, Any] = {
     "region": "japaneast",
     "api_version": "2025-10-15",
     "locale": "ja-JP",
-    "diarization": {"enabled": True, "max_speakers": 8},
+    "diarization": {"enabled": False, "max_speakers": 8},
+    "profanity_filter_mode": "None",
+    "phrase_list": {"phrases": []},
+    "authentication": {"reuse_cached_credentials": True},
     "request": {"timeout_seconds": 600, "max_retries": 3},
 }
 PROFILE_DEFAULTS = {
@@ -164,6 +176,9 @@ ACTIVE_KEYS = {"mode", "profile"}
 BACKEND_KEYS = {"provider", "profiles"}
 LOCAL_PROFILE_KEYS = set(LOCAL_PROFILE_DEFAULTS)
 AZURE_PROFILE_KEYS = {
+    "profanity_filter_mode",
+    "phrase_list",
+    "authentication",
     "endpoint",
     "region",
     "api_version",
@@ -202,6 +217,9 @@ LOCAL_PROFILE_TO_FLAT = {
     "device": "device",
 }
 AZURE_PROFILE_TO_FLAT = {
+    ("profanity_filter_mode",): "azure_speech_profanity_filter_mode",
+    ("phrase_list", "phrases"): "azure_speech_phrases",
+    ("authentication", "reuse_cached_credentials"): "azure_speech_reuse_cached_credentials",
     ("endpoint",): "azure_speech_endpoint",
     ("region",): "azure_speech_region",
     ("api_version",): "azure_speech_api_version",
@@ -221,6 +239,9 @@ LEGACY_LOCAL_TO_PROFILE = {
     "device": ("device",),
 }
 LEGACY_AZURE_TO_PROFILE = {
+    "azure_speech_profanity_filter_mode": ("profanity_filter_mode",),
+    "azure_speech_phrases": ("phrase_list", "phrases"),
+    "azure_speech_reuse_cached_credentials": ("authentication", "reuse_cached_credentials"),
     "azure_speech_endpoint": ("endpoint",),
     "azure_speech_region": ("region",),
     "azure_speech_api_version": ("api_version",),
@@ -260,6 +281,10 @@ class AzureSpeechTranscriptionConfig:
     max_speakers: int
     timeout_seconds: int
     max_retries: int
+    profanity_filter_mode: str = "None"
+    phrases: tuple[str, ...] = ()
+    reuse_cached_credentials: bool = True
+    authentication_dir: Path = Path("~/.tkn/audio_transcriber/state/auth")
 
 
 type TranscriptionConfig = LocalTranscriptionConfig | AzureSpeechTranscriptionConfig
@@ -443,9 +468,7 @@ def _mapping(value: Any, label: str, path: Path) -> dict[str, Any]:
     return dict(value)
 
 
-def _reject_unknown(
-    value: dict[str, Any], allowed: set[str], label: str, path: Path
-) -> None:
+def _reject_unknown(value: dict[str, Any], allowed: set[str], label: str, path: Path) -> None:
     unknown = sorted(str(key) for key in set(value) - allowed)
     if unknown:
         raise ConfigError(f"Unknown config key(s) in {path} at {label}: {', '.join(unknown)}")
@@ -472,6 +495,30 @@ def _positive_integer(value: Any, label: str, path: Path, *, allow_zero: bool = 
 
 
 def _validate_profile_values(profile: dict[str, Any], label: str, path: Path) -> None:
+    if "profanity_filter_mode" in profile:
+        mode = profile["profanity_filter_mode"]
+        _require_type(mode, str, f"{label}.profanity_filter_mode", path)
+        if mode not in {"None", "Masked", "Removed", "Tags"}:
+            raise ConfigError(
+                f"{label}.profanity_filter_mode must be None, Masked, Removed, or Tags"
+            )
+    if "phrase_list" in profile:
+        phrase_list = _mapping(profile["phrase_list"], f"{label}.phrase_list", path)
+        _reject_unknown(phrase_list, {"phrases"}, f"{label}.phrase_list", path)
+        if "phrases" in phrase_list:
+            _validate_phrases(phrase_list["phrases"])
+    if "authentication" in profile:
+        authentication = _mapping(profile["authentication"], f"{label}.authentication", path)
+        _reject_unknown(
+            authentication, {"reuse_cached_credentials"}, f"{label}.authentication", path
+        )
+        if "reuse_cached_credentials" in authentication:
+            _require_type(
+                authentication["reuse_cached_credentials"],
+                bool,
+                f"{label}.authentication.reuse_cached_credentials",
+                path,
+            )
     if "provider" in profile:
         _require_type(profile["provider"], str, f"{label}.provider", path)
         if profile["provider"] not in PROVIDERS:
@@ -573,9 +620,7 @@ def _validate_backend_layer(value: Any, *, mode: str, path: Path) -> None:
     if "provider" in backend:
         _require_type(backend["provider"], str, f"{label}.provider", path)
         if backend["provider"] != expected_provider:
-            raise ConfigError(
-                f"{label}.provider must be {expected_provider!r} in {path}"
-            )
+            raise ConfigError(f"{label}.provider must be {expected_provider!r} in {path}")
     if "profiles" in backend:
         allowed = LOCAL_PROFILE_KEYS if mode == LOCAL_MODE else AZURE_PROFILE_KEYS
         _validate_named_profiles(
@@ -603,9 +648,7 @@ def _validate_v3_layer(value: dict[str, Any], path: Path) -> None:
             if "profile" in active:
                 _require_type(active["profile"], str, "transcription.active.profile", path)
                 if not active["profile"].strip():
-                    raise ConfigError(
-                        f"transcription.active.profile must not be empty in {path}"
-                    )
+                    raise ConfigError(f"transcription.active.profile must not be empty in {path}")
         for mode in (LOCAL_MODE, CLOUD_MODE):
             if mode in transcription:
                 _validate_backend_layer(transcription[mode], mode=mode, path=path)
@@ -636,19 +679,35 @@ def _validate_shared_layer(value: dict[str, Any], path: Path) -> None:
                     ffmpeg["timeout_seconds"], "processing.ffmpeg.timeout_seconds", path
                 )
         if "heartbeat_seconds" in processing:
-            _positive_integer(
-                processing["heartbeat_seconds"], "processing.heartbeat_seconds", path
-            )
+            _positive_integer(processing["heartbeat_seconds"], "processing.heartbeat_seconds", path)
         if "keep_working_files" in processing:
             _require_type(
                 processing["keep_working_files"], bool, "processing.keep_working_files", path
             )
 
 
+def _validate_phrases(phrases: Any) -> None:
+    if not isinstance(phrases, list) or len(phrases) > 500:
+        raise ConfigError("phrase_list.phrases must be a list of at most 500 phrases")
+    if any(not isinstance(phrase, str) or not phrase.strip() for phrase in phrases):
+        raise ConfigError("phrase_list.phrases must contain non-empty strings")
+
+
 def _validate_flat_values(
     values: dict[str, Any], *, require_provider_settings: bool = False
 ) -> None:
     azure_active = values.get("provider") == AZURE_PROVIDER
+    if azure_active:
+        _validate_phrases(values["azure_speech_phrases"])
+        if values["azure_speech_profanity_filter_mode"] not in (
+            "None",
+            "Masked",
+            "Removed",
+            "Tags",
+        ):
+            raise ConfigError(
+                "azure_speech_profanity_filter_mode must be None, Masked, Removed, or Tags"
+            )
     for key, value in values.items():
         if key in AZURE_SETTING_KEYS and not azure_active:
             continue
@@ -659,6 +718,12 @@ def _validate_flat_values(
             raise ConfigError(
                 f"{key} has invalid type {type(value).__name__}; expected {expected_type}"
             )
+    if (
+        azure_active
+        and values["azure_speech_phrases"]
+        and values["azure_speech_api_version"] < "2025-10-15"
+    ):
+        raise ConfigError("phrase_list requires Azure Speech API version 2025-10-15 or later")
     for key in (
         "chunk_seconds",
         "beam_size",
@@ -686,9 +751,7 @@ def _validate_flat_values(
         if (key not in AZURE_SETTING_KEYS or azure_active) and not values[key].strip():
             raise ConfigError(f"{key} must not be empty")
     if values["provider"] not in PROVIDERS:
-        raise ConfigError(
-            f"provider must be either {LOCAL_PROVIDER!r} or {AZURE_PROVIDER!r}"
-        )
+        raise ConfigError(f"provider must be either {LOCAL_PROVIDER!r} or {AZURE_PROVIDER!r}")
     if require_provider_settings and azure_active:
         endpoint = values["azure_speech_endpoint"]
         if not isinstance(endpoint, str) or not endpoint.strip():
@@ -914,15 +977,13 @@ def _effective_profile(
     expected_provider = LOCAL_PROVIDER if mode == LOCAL_MODE else AZURE_PROVIDER
     if provider != expected_provider:
         raise ConfigError(
-            f"transcription.{mode}.provider is required and must be "
-            f"{expected_provider!r} in {path}"
+            f"transcription.{mode}.provider is required and must be {expected_provider!r} in {path}"
         )
     profiles = _mapping(backend.get("profiles"), f"transcription.{mode}.profiles", path)
     if name not in profiles:
         available = ", ".join(sorted(str(item) for item in profiles)) or "(none)"
         raise ConfigError(
-            f"Unknown transcription profile {mode}/{name!s}; available {mode} "
-            f"profiles: {available}"
+            f"Unknown transcription profile {mode}/{name!s}; available {mode} profiles: {available}"
         )
     profile = _mapping(profiles[name], f"transcription.{mode}.profiles.{name}", path)
     allowed = LOCAL_PROFILE_KEYS if mode == LOCAL_MODE else AZURE_PROFILE_KEYS
@@ -941,9 +1002,7 @@ def _get_nested(value: dict[str, Any], keys: tuple[str, ...]) -> Any:
     return cursor
 
 
-def _select_profile(
-    config: dict[str, Any], selector: str | None, path: Path
-) -> tuple[str, str]:
+def _select_profile(config: dict[str, Any], selector: str | None, path: Path) -> tuple[str, str]:
     transcription = _mapping(config.get("transcription"), "transcription", path)
     if selector is None:
         active = _mapping(transcription.get("active"), "transcription.active", path)
@@ -963,9 +1022,7 @@ def _select_profile(
         raise ConfigError(f"Unknown transcription profile {selector!r}")
     if len(matches) > 1:
         choices = ", ".join(f"{mode}/{selector}" for mode in matches)
-        raise ConfigError(
-            f"Ambiguous transcription profile {selector!r}; use one of: {choices}"
-        )
+        raise ConfigError(f"Ambiguous transcription profile {selector!r}; use one of: {choices}")
     return matches[0], selector
 
 
@@ -1067,6 +1124,10 @@ def _typed_transcription(
         max_speakers=int(values["azure_speech_max_speakers"]),
         timeout_seconds=int(values["azure_speech_timeout_seconds"]),
         max_retries=int(values["azure_speech_max_retries"]),
+        profanity_filter_mode=str(values["azure_speech_profanity_filter_mode"]),
+        phrases=tuple(values["azure_speech_phrases"]),
+        reuse_cached_credentials=bool(values["azure_speech_reuse_cached_credentials"]),
+        authentication_dir=Path(values["state_dir"]) / "auth",
     )
 
 
@@ -1155,9 +1216,7 @@ def resolve_config(
             _merge_config(config, layer, source_paths, source_label)
         loaded_files.append(path)
 
-    selected_mode, selected_profile = _select_profile(
-        config, profile, current_directory
-    )
+    selected_mode, selected_profile = _select_profile(config, profile, current_directory)
     active_mode_source = (
         "CLI option"
         if profile is not None

@@ -303,8 +303,13 @@ transcription:
         api_version: "2025-10-15"
         locale: ja-JP
         diarization:
-          enabled: true
+          enabled: false
           max_speakers: 8
+        profanity_filter_mode: "None"
+        phrase_list:
+          phrases: []
+        authentication:
+          reuse_cached_credentials: true
         request:
           timeout_seconds: 600
           max_retries: 3
@@ -335,13 +340,23 @@ responsible for confirming that the selected input is permitted for cloud proces
 before adding the flag. Azure charges can begin when the normalized audio POST is
 submitted; dry-run, hashing, and local normalization do not call the Speech API.
 
-Authentication is fixed to
-[`InteractiveBrowserCredential`](https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity.interactivebrowsercredential?view=azure-python)
-with the Cognitive Services token scope. No authentication settings or secrets need to
-be added to `config.yaml`; subscription keys are unsupported.
+Azure recognition defaults to no diarization and no profanity masking. Explicit default
+properties are included by `config init`. Set `phrase_list.phrases` to a list of up to
+500 non-empty terms (for example, company names or specialist vocabulary); an empty list
+disables phrase hints. Phrase lists require API version `2025-10-15` or later. Hints bias
+recognition, not guaranteed corrections: prefer a short relevant list. The terms are sent
+to Azure with the audio and recorded in local job/manifest settings. `profanity_filter_mode`
+accepts `"None"`, `Masked`, `Removed`, or `Tags`. Changed recognition settings change the
+job fingerprint; use a new profile name/output directory to preserve previous comparisons,
+or explicitly use `--overwrite`. These settings do not apply to local Whisper profiles.
 
-1. Before each new Azure submission, the CLI opens the default browser and requests
-   an account picker (`prompt=select_account`), even if the browser is already signed in.
+Authentication uses
+[`InteractiveBrowserCredential`](https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity.interactivebrowsercredential?view=azure-python)
+with the Cognitive Services token scope. No secrets belong in `config.yaml`;
+subscription keys are unsupported.
+
+1. Before a new Azure submission, the CLI tries the encrypted persistent token cache,
+   including silent token renewal. It opens the browser only when interaction is required.
 2. Select the work or school account with access to the configured Speech resource and
    complete any sign-in, consent, or MFA required by Microsoft Entra. Account selection
    does not force password re-entry or a browser sign-out.
@@ -355,10 +370,17 @@ may leave the CLI waiting until that timeout, so use Ctrl+C to stop immediately.
 `--dry-run`, missing upload approval, and reuse of completed outputs or a completed
 Azure response checkpoint do not open the browser.
 
-Tokens and the SDK authentication record are kept only in process memory; the CLI
-does not persist them or the selected account name to config, job state, manifests,
-or logs. Browser cookies remain managed by the browser. Dry-run reports
-`authentication_method: InteractiveBrowserCredential` and `account_selection_required: true`;
+The SDK stores tokens in an OS-protected encrypted cache isolated by this application,
+state directory, and Speech endpoint (Windows uses DPAPI). Unencrypted fallback is disabled;
+failure to use encrypted storage stops before upload. Non-secret account identifiers are
+saved separately under `<state>/auth/`, not in config, job records, manifests, or logs.
+Treat this account record as personal data. Browser cookies remain browser-managed.
+Set `authentication.reuse_cached_credentials: false`, or use
+`--no-azure-speech-reuse-cached-credentials`, to force account selection and update the saved
+account for subsequent runs. The first run after upgrading needs one sign-in because older
+versions did not persist credentials. MFA/tenant policies may still require later sign-in.
+Dry-run never reads or creates authentication caches; it reports
+`authentication_method: InteractiveBrowserCredential` and `authentication_interaction: if_required`;
 manifests for new submissions record the same authentication method. Resumed checkpoints
 retain their recorded method; legacy checkpoints without that field report `unknown`
 instead of claiming browser authentication for a past submission.
@@ -645,8 +667,8 @@ with validation, backup, and atomic replacement.
 
 For unattended operation, install the CLI with `uv tool install .`, use absolute
 source-media/output paths, and run a local profile from Windows Task Scheduler or cron.
-Cloud profiles require an interactive desktop and browser account selection for each
-new submission; they are not suitable for unattended jobs. The
+Cloud profiles can reuse cached credentials, but require an interactive desktop when
+sign-in/MFA is needed; they do not guarantee unattended operation. The
 command returns `0` on success, `2` for expected configuration/input/validation
 errors, `130` for interruption, and `1` for unexpected failures.
 

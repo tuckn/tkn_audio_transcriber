@@ -51,8 +51,13 @@ transcription:
         api_version: "2025-10-15"
         locale: ja-JP
         diarization:
-          enabled: true
+          enabled: false
           max_speakers: 8
+        profanity_filter_mode: "None"
+        phrase_list:
+          phrases: []
+        authentication:
+          reuse_cached_credentials: true
         request:
           timeout_seconds: 600
           max_retries: 3

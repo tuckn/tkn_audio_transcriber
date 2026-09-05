@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import random
@@ -16,6 +17,7 @@ import httpx
 
 from .config import AzureSpeechTranscriptionConfig
 from .errors import AzureSpeechError, AzureSubmissionOutcomeUnknownError
+from .io_utils import atomic_write_text
 from .models import Segment
 
 AZURE_SPEECH_TOKEN_SCOPE = "https://cognitiveservices.azure.com/.default"
@@ -56,14 +58,36 @@ class AzureTranscription:
     request_id: str | None
 
 
-def _default_credential_factory() -> BrowserCredentialLike:
-    from azure.identity import InteractiveBrowserCredential
+def _authentication_record_path(config: AzureSpeechTranscriptionConfig) -> Path:
+    resource = hashlib.sha256(config.endpoint.rstrip("/").lower().encode()).hexdigest()[:24]
+    return config.authentication_dir.expanduser() / f"{resource}.json"
+
+
+def _default_credential_factory(config: AzureSpeechTranscriptionConfig) -> BrowserCredentialLike:
+    from azure.identity import (
+        AuthenticationRecord,
+        InteractiveBrowserCredential,
+        TokenCachePersistenceOptions,
+    )
+
+    record_path = _authentication_record_path(config)
+    record = None
+    if config.reuse_cached_credentials and record_path.exists():
+        try:
+            record = AuthenticationRecord.deserialize(record_path.read_text(encoding="utf-8"))
+        except (ValueError, KeyError):
+            # An unusable non-secret account record requires fresh account selection.
+            record = None
+    cache_id = hashlib.sha256(str(record_path.resolve()).encode()).hexdigest()[:24]
 
     return cast(
         BrowserCredentialLike,
         InteractiveBrowserCredential(
             disable_automatic_authentication=True,
-            cache_persistence_options=None,
+            authentication_record=record,
+            cache_persistence_options=TokenCachePersistenceOptions(
+                name=f"tkn-audio-transcriber-{cache_id}", allow_unencrypted_storage=False
+            ),
             timeout=BROWSER_AUTH_TIMEOUT_SECONDS,
         ),
     )
@@ -197,14 +221,16 @@ class AzureSpeechFastAdapter:
         *,
         config: AzureSpeechTranscriptionConfig,
         logger: logging.Logger,
-        credential_factory: CredentialFactory = _default_credential_factory,
+        credential_factory: CredentialFactory | None = None,
         client_factory: ClientFactory = _default_client_factory,
         sleep: Sleep = time.sleep,
         jitter: Jitter = random.uniform,
     ) -> None:
         self.config = config
         self.logger = logger
-        self.credential_factory = credential_factory
+        self.credential_factory = credential_factory or (
+            lambda: _default_credential_factory(config)
+        )
         self.client_factory = client_factory
         self.sleep = sleep
         self.jitter = jitter
@@ -218,7 +244,12 @@ class AzureSpeechFastAdapter:
         timeout = float(self.config.timeout_seconds)
         max_retries = self.config.max_retries
 
-        definition: dict[str, Any] = {"locales": [locale]}
+        definition: dict[str, Any] = {
+            "locales": [locale],
+            "profanityFilterMode": self.config.profanity_filter_mode,
+        }
+        if self.config.phrases:
+            definition["phraseList"] = {"phrases": list(self.config.phrases)}
         if diarization:
             definition["diarization"] = {
                 "enabled": True,
@@ -234,23 +265,34 @@ class AzureSpeechFastAdapter:
         client: HttpClientLike | None = None
         try:
             try:
-                self.logger.info(
-                    "Opening your browser: select the Microsoft account with access to "
-                    "the configured Speech resource (authentication timeout: %d seconds)",
-                    BROWSER_AUTH_TIMEOUT_SECONDS,
-                )
-                # A fresh browser credential is created for each submission, without an
-                # authentication record or persistent cache. Its interactive flow uses
-                # prompt=select_account; HTTP retries below reuse this selected identity.
-                credential.authenticate(scopes=[AZURE_SPEECH_TOKEN_SCOPE])
-                token = credential.get_token(AZURE_SPEECH_TOKEN_SCOPE).token
+                from azure.identity import AuthenticationRequiredError
+
+                try:
+                    if not self.config.reuse_cached_credentials:
+                        raise AuthenticationRequiredError([AZURE_SPEECH_TOKEN_SCOPE])
+                    token = credential.get_token(AZURE_SPEECH_TOKEN_SCOPE).token
+                except AuthenticationRequiredError:
+                    self.logger.info(
+                        "Opening your browser: sign-in or account selection is required "
+                        "(authentication timeout: %d seconds)",
+                        BROWSER_AUTH_TIMEOUT_SECONDS,
+                    )
+                    record = credential.authenticate(scopes=[AZURE_SPEECH_TOKEN_SCOPE])
+                    # AuthenticationRecord contains account identifiers, not tokens.
+                    from azure.identity import AuthenticationRecord
+
+                    if isinstance(record, AuthenticationRecord):
+                        atomic_write_text(
+                            _authentication_record_path(self.config), record.serialize()
+                        )
+                    token = credential.get_token(AZURE_SPEECH_TOKEN_SCOPE).token
             except Exception as exc:
                 raise AzureSpeechError(
                     "Azure Speech browser authentication failed or timed out before submission. "
                     "Complete account selection in the browser and retry; "
                     "a browser and a local callback connection must be available."
                 ) from exc
-            self.logger.info("Browser account selection completed; preparing the Speech upload")
+            self.logger.info("Azure authentication ready; preparing the Speech upload")
             try:
                 client = self.client_factory(timeout)
             except Exception as exc:

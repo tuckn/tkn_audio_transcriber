@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 from collections.abc import Callable, Iterable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,81 @@ class FakeToken:
     token = "CANARY_TOKEN_VALUE"
 
 
+def test_cached_token_does_not_prompt_and_request_carries_settings(tmp_path: Path) -> None:
+    audio = tmp_path / "upload.flac"
+    audio.write_bytes(b"audio")
+
+    class CachedCredential(FakeCredential):
+        def get_token(self, *scopes: str, **kwargs: Any) -> FakeToken:
+            self.scopes.extend(scopes)
+            return FakeToken()
+
+        def authenticate(self, *, scopes: Iterable[str]) -> object:
+            pytest.fail("cached token must not open the browser")
+
+    credential = CachedCredential()
+
+    def submit(url: str, kwargs: dict[str, Any]) -> httpx.Response:
+        assert json.loads(kwargs["data"]["definition"]) == {
+            "locales": ["ja-JP"],
+            "profanityFilterMode": "None",
+            "phraseList": {"phrases": ["Contoso", "用語"]},
+        }
+        return httpx.Response(200, json={"phrases": []})
+
+    client = FakeClient(submit)
+    AzureSpeechFastAdapter(
+        config=replace(
+            make_config(tmp_path), diarization_enabled=False, phrases=("Contoso", "用語")
+        ),
+        logger=logging.getLogger("audio_transcriber.tests.azure"),
+        credential_factory=lambda: credential,
+        client_factory=lambda timeout: client,
+    ).transcribe(audio)
+    assert len(client.calls) == 1
+    assert credential.authentication_scopes == []
+    assert credential.closed and client.closed
+
+
+def test_force_account_selection_even_with_cached_token(tmp_path: Path) -> None:
+    audio = tmp_path / "upload.flac"
+    audio.write_bytes(b"audio")
+    adapter, credential, client = make_adapter(
+        tmp_path,
+        lambda url, kwargs: httpx.Response(200, json={"phrases": []}),
+    )
+    adapter.config = replace(adapter.config, reuse_cached_credentials=False)
+    adapter.transcribe(audio)
+    assert credential.authentication_scopes == [[AZURE_SPEECH_TOKEN_SCOPE]]
+    assert len(client.calls) == 1
+
+
+def test_auth_cache_isolation_and_corrupt_record_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from audio_transcriber.azure_speech_adapter import _authentication_record_path
+
+    options: list[dict[str, Any]] = []
+
+    def factory(**kwargs: Any) -> FakeCredential:
+        options.append(kwargs)
+        return FakeCredential()
+
+    monkeypatch.setattr("azure.identity.InteractiveBrowserCredential", factory)
+    config = make_config(tmp_path)
+    record = _authentication_record_path(config)
+    record.parent.mkdir(parents=True)
+    record.write_text("invalid json", encoding="utf-8")
+    _default_credential_factory(config)
+    _default_credential_factory(
+        replace(config, endpoint="https://other.cognitiveservices.azure.com")
+    )
+    _default_credential_factory(replace(config, authentication_dir=tmp_path / "other"))
+    assert all(option["authentication_record"] is None for option in options)
+    assert len({option["cache_persistence_options"].name for option in options}) == 3
+
+
 class FakeCredential:
     def __init__(self) -> None:
         self.scopes: list[str] = []
@@ -35,6 +112,10 @@ class FakeCredential:
         return object()
 
     def get_token(self, *scopes: str, **kwargs: Any) -> FakeToken:
+        from azure.identity import AuthenticationRequiredError
+
+        if not self.authentication_scopes:
+            raise AuthenticationRequiredError(list(scopes))
         assert self.authentication_scopes == [list(scopes)]
         self.scopes.extend(scopes)
         return FakeToken()
@@ -65,6 +146,8 @@ def make_config(tmp_path: Path, *, retries: int = 2) -> AzureSpeechTranscription
         cli_overrides={
             "azure_speech_endpoint": "https://example.cognitiveservices.azure.com/",
             "azure_speech_max_retries": retries,
+            "azure_speech_diarization_enabled": True,
+            "state_dir": str(tmp_path / "state"),
         },
     )
     assert isinstance(resolved.transcription, AzureSpeechTranscriptionConfig)
@@ -109,9 +192,7 @@ def test_success_uses_entra_multipart_and_preserves_speaker(
         assert kwargs["files"]["audio"][2] == "audio/flac"
         assert kwargs["files"]["audio"][1].read() == audio_canary.encode()
         assert '"locales":["ja-JP"]' in kwargs["data"]["definition"]
-        assert '"diarization":{"enabled":true,"maxSpeakers":8}' in kwargs["data"][
-            "definition"
-        ]
+        assert '"diarization":{"enabled":true,"maxSpeakers":8}' in kwargs["data"]["definition"]
         return httpx.Response(
             200,
             headers={"apim-request-id": "request-123"},
@@ -202,9 +283,7 @@ def test_pre_upload_connection_failure_is_retried(tmp_path: Path) -> None:
         nonlocal attempt
         attempt += 1
         if attempt == 1:
-            raise httpx.ConnectError(
-                "connect failed", request=httpx.Request("POST", url)
-            )
+            raise httpx.ConnectError("connect failed", request=httpx.Request("POST", url))
         return httpx.Response(200, json={"phrases": []})
 
     sleeps: list[float] = []
@@ -351,8 +430,9 @@ def test_browser_authentication_interruption_closes_credential_without_upload(
     assert client_calls == []
 
 
-def test_default_factory_uses_browser_only_without_persistent_cache(
+def test_default_factory_uses_isolated_encrypted_cache(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     constructor_options: list[dict[str, Any]] = []
     credentials: list[FakeCredential] = []
@@ -373,19 +453,18 @@ def test_default_factory_uses_browser_only_without_persistent_cache(
     monkeypatch.setenv("AZURE_CLIENT_SECRET", "CANARY_AMBIENT_SECRET")
     monkeypatch.setenv("AZURE_TENANT_ID", "CANARY_AMBIENT_TENANT")
 
-    first = _default_credential_factory()
-    second = _default_credential_factory()
+    first = _default_credential_factory(make_config(tmp_path))
+    second = _default_credential_factory(make_config(tmp_path))
 
     assert first is credentials[0]
     assert second is credentials[1]
     assert first is not second
-    assert constructor_options == [
-        {
-            "disable_automatic_authentication": True,
-            "cache_persistence_options": None,
-            "timeout": 300,
-        }
-    ] * 2
+    for options in constructor_options:
+        assert options["disable_automatic_authentication"] is True
+        assert options["authentication_record"] is None
+        assert options["cache_persistence_options"].allow_unencrypted_storage is False
+        assert options["cache_persistence_options"].name.startswith("tkn-audio-transcriber-")
+        assert options["timeout"] == 300
 
 
 @pytest.mark.parametrize("outcome", ["success", "browser_unavailable", "timeout", "denied"])
@@ -479,17 +558,25 @@ def test_real_sdk_browser_flow_requests_account_selection_before_upload(
     )
 
     if outcome == "success":
-        # Even reusing the adapter must not silently reuse the last chosen account.
+        # A new credential loads the saved record and silently reuses the account.
         adapter.transcribe(audio)
         adapter.transcribe(audio)
-        assert events == ["browser", "callback", "authenticate", "get_token", "upload"] * 2
+        assert events == [
+            "browser",
+            "callback",
+            "authenticate",
+            "get_token",
+            "upload",
+            "get_token",
+            "upload",
+        ]
     else:
         with pytest.raises(AzureSpeechError, match="browser authentication failed"):
             adapter.transcribe(audio)
         assert client.calls == []
         assert "get_token" not in events
 
-    expected_runs = 2 if outcome == "success" else 1
+    expected_runs = 1
     assert len(browser_urls) == expected_runs
     assert len(flow_options) == expected_runs
     assert server_options == [("localhost", 8400, 300)] * expected_runs

@@ -61,9 +61,7 @@ class AzureRecognizer(Protocol):
     def transcribe(self, upload_audio: Path) -> AzureTranscription: ...
 
 
-AzureRecognizerFactory = Callable[
-    [AzureSpeechTranscriptionConfig, logging.Logger], AzureRecognizer
-]
+AzureRecognizerFactory = Callable[[AzureSpeechTranscriptionConfig, logging.Logger], AzureRecognizer]
 
 
 def format_timestamp(seconds: float) -> str:
@@ -104,6 +102,8 @@ def _fingerprint_settings(config: ResolvedConfig) -> dict[str, object]:
         "azure_speech_locale": transcription.locale,
         "azure_speech_diarization_enabled": transcription.diarization_enabled,
         "azure_speech_max_speakers": transcription.max_speakers,
+        "azure_speech_profanity_filter_mode": transcription.profanity_filter_mode,
+        "azure_speech_phrases": list(transcription.phrases),
         "upload_format": "flac",
     }
 
@@ -136,15 +136,11 @@ def _load_segments(path: Path) -> list[Segment]:
                     end=float(value["end"]),
                     text=str(value["text"]),
                     chunk=str(value["chunk"]),
-                    speaker=(
-                        None if value.get("speaker") is None else str(value["speaker"])
-                    ),
+                    speaker=(None if value.get("speaker") is None else str(value["speaker"])),
                 )
             )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise ValidationError(
-                f"Invalid checkpoint JSONL at {path}:{line_number}"
-            ) from exc
+            raise ValidationError(f"Invalid checkpoint JSONL at {path}:{line_number}") from exc
     return segments
 
 
@@ -159,8 +155,7 @@ def _bound_local_segments(
         chunk.name: (
             float(position * chunk_seconds),
             min(
-                float(position * chunk_seconds)
-                + inspect_normalized_wav(chunk).duration_seconds,
+                float(position * chunk_seconds) + inspect_normalized_wav(chunk).duration_seconds,
                 decoded_duration,
             ),
         )
@@ -263,14 +258,10 @@ def _render_srt(segments: list[Segment]) -> str:
 
 
 def _render_jsonl(segments: list[Segment]) -> str:
-    return "".join(
-        json.dumps(segment.to_dict(), ensure_ascii=False) + "\n" for segment in segments
-    )
+    return "".join(json.dumps(segment.to_dict(), ensure_ascii=False) + "\n" for segment in segments)
 
 
-def _default_recognizer(
-    model_path: Path, config: LocalTranscriptionConfig
-) -> SpeechRecognizer:
+def _default_recognizer(model_path: Path, config: LocalTranscriptionConfig) -> SpeechRecognizer:
     return FasterWhisperAdapter(
         model_path=model_path,
         language=config.language,
@@ -300,7 +291,12 @@ def _dry_run_plan(config: ResolvedConfig) -> dict[str, object]:
             "diarization_enabled": transcription.diarization_enabled,
             "upload_format": "flac",
             "authentication_method": AZURE_AUTHENTICATION_METHOD,
-            "account_selection_required": True,
+            "account_selection_required": not transcription.reuse_cached_credentials,
+            "authentication_interaction": "if_required"
+            if transcription.reuse_cached_credentials
+            else "always",
+            "profanity_filter_mode": transcription.profanity_filter_mode,
+            "phrase_list": {"phrases": list(transcription.phrases)},
             "cloud_upload_approval_required": True,
             "cloud_upload_approved": False,
             "network_calls": 0,
@@ -505,9 +501,7 @@ class TranscriptionPipeline:
                 if not chunks:
                     tracker.set_stage("splitting")
                     self.logger.info("Splitting normalized audio into chunks")
-                    chunks = self.ffmpeg.split(
-                        normalized, chunks_dir, transcription.chunk_seconds
-                    )
+                    chunks = self.ffmpeg.split(normalized, chunks_dir, transcription.chunk_seconds)
                 chunk_duration_seconds = validate_chunk_coverage(normalized_info, chunks)
 
                 processed_chunks: set[str] = set()
@@ -612,9 +606,7 @@ class TranscriptionPipeline:
                         chunk_position=1,
                         chunk_count=1,
                     )
-                    azure_recognizer = self.azure_recognizer_factory(
-                        transcription, self.logger
-                    )
+                    azure_recognizer = self.azure_recognizer_factory(transcription, self.logger)
                     azure_result = tracker.run_with_heartbeat(
                         partial(azure_recognizer.transcribe, cloud_audio)
                     )
@@ -736,6 +728,8 @@ class TranscriptionPipeline:
                     "locale": transcription.locale,
                     "diarization_enabled": transcription.diarization_enabled,
                     "max_speakers": transcription.max_speakers,
+                    "profanity_filter_mode": transcription.profanity_filter_mode,
+                    "phrase_list": {"phrases": list(transcription.phrases)},
                     "timeout_seconds": transcription.timeout_seconds,
                     "max_retries": transcription.max_retries,
                     "upload_format": "flac",

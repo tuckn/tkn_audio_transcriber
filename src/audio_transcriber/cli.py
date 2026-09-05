@@ -27,9 +27,7 @@ from .validation import validate_artifact
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tkn-audio-transcriber",
-        description=(
-            "Create Markdown, SRT, and JSONL transcripts with local or Azure Speech ASR."
-        ),
+        description=("Create Markdown, SRT, and JSONL transcripts with local or Azure Speech ASR."),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
@@ -144,6 +142,17 @@ def _parser() -> argparse.ArgumentParser:
     transcribe.add_argument("--azure-speech-api-version", help="Speech REST API version.")
     transcribe.add_argument("--azure-speech-locale", help="Speech locale, for example ja-JP.")
     transcribe.add_argument(
+        "--azure-speech-profanity-filter-mode",
+        choices=["None", "Masked", "Removed", "Tags"],
+        help="Profanity handling (default: None, preserve recognized text).",
+    )
+    transcribe.add_argument(
+        "--azure-speech-reuse-cached-credentials",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Reuse encrypted credentials; disable to select an account again.",
+    )
+    transcribe.add_argument(
         "--azure-speech-diarization-enabled",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -167,7 +176,7 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Approve uploading FLAC audio for this run only; cannot be saved in config. "
-            "New cloud submissions require browser sign-in and account selection."
+            "Browser sign-in is needed only when cached credentials cannot be reused."
         ),
     )
     transcribe.add_argument(
@@ -318,12 +327,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "azure_speech_region": args.azure_speech_region,
                 "azure_speech_api_version": args.azure_speech_api_version,
                 "azure_speech_locale": args.azure_speech_locale,
-                "azure_speech_diarization_enabled": (
-                    args.azure_speech_diarization_enabled
-                ),
+                "azure_speech_diarization_enabled": (args.azure_speech_diarization_enabled),
                 "azure_speech_max_speakers": args.azure_speech_max_speakers,
                 "azure_speech_timeout_seconds": args.azure_speech_timeout_seconds,
                 "azure_speech_max_retries": args.azure_speech_max_retries,
+                "azure_speech_profanity_filter_mode": args.azure_speech_profanity_filter_mode,
+                "azure_speech_reuse_cached_credentials": args.azure_speech_reuse_cached_credentials,
             }
             config = _resolve(args, overrides)
             _warn_in_memory_migrations(config, logger)

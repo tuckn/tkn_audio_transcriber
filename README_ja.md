@@ -282,8 +282,13 @@ transcription:
         api_version: "2025-10-15"
         locale: ja-JP
         diarization:
-          enabled: true
+          enabled: false
           max_speakers: 8
+        profanity_filter_mode: "None"
+        phrase_list:
+          phrases: []
+        authentication:
+          reuse_cached_credentials: true
         request:
           timeout_seconds: 600
           max_retries: 3
@@ -313,13 +318,22 @@ CLIは録音内容の機密区分を判定できません。flagを付ける前�
 許可されたdataであることを利用者が確認します。正規化音声のPOST時点からAzure課金が
 発生し得ます。dry-run、hash計算、local正規化はSpeech APIを呼びません。
 
+Azureの既定値は話者分離なし・伏字なしです。`config init`には既定値のプロパティも明示します。
+`phrase_list.phrases`には会社名・専門用語など、空でない文字列を最大500語設定できます。
+空リストでは用語補助を送りません。API `2025-10-15`以降が必要です。認識候補を優先させる
+機能であり、正解を強制する辞書ではないため、まずは会話に関連する少数の用語から試します。
+用語は音声とともにAzureへ送信し、ローカルのjob・manifest設定にも記録します。
+`profanity_filter_mode`は`"None"`、`Masked`、`Removed`、`Tags`から選びます。
+認識設定を変更するとjobのfingerprintも変わります。比較結果を残す場合は別profile名・
+出力先を使い、置換する場合だけ`--overwrite`を指定します。これらはlocal Whisperには適用しません。
+
 認証は
 [`InteractiveBrowserCredential`](https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity.interactivebrowsercredential?view=azure-python)
 によるブラウザー認証に固定し、Cognitive Services token scopeを使います。
-`config.yaml`に認証設定やsecretを追加する必要はありません。subscription keyは受け付けません。
+`config.yaml`にsecretは保存しません。subscription keyは受け付けません。
 
-1. Azureへの新規送信前に既定のブラウザーを開き、アカウント選択画面を要求します
-   （`prompt=select_account`）。ブラウザーがログイン済みでも選択を要求します。
+1. Azureへの新規送信前に暗号化済みの永続token cacheを試し、可能ならtokenを自動更新します。
+   対話が必要な場合だけブラウザーを開き、アカウント選択画面を要求します。
 2. 設定したSpeech resourceを利用できる職場または学校アカウントを選び、Microsoft Entraが
    求めるログイン・同意・MFAを完了します。アカウント選択は、パスワード再入力や
    ブラウザーからのログアウトを強制するものではありません。
@@ -332,10 +346,17 @@ fallbackしません。認証失敗・キャンセル・timeoutでは音声送�
 場合はCtrl+Cを使います。`--dry-run`、送信承認flagなし、完了済み出力やAzure応答取得済み
 checkpointの再利用では、ブラウザーを開きません。
 
-tokenとSDKの認証recordはprocessのメモリだけに保持し、これらや選択したアカウント名を
-config、job state、manifest、logへ保存しません。ブラウザーのcookieはブラウザー側が管理します。
-dry-runには`authentication_method: InteractiveBrowserCredential`と
-`account_selection_required: true`を表示し、新規送信のmanifestにも同じ認証方式を記録します。
+tokenはSDKがOS保護の暗号化cacheに保存します（WindowsではDPAPI）。アプリ・stateディレクトリ・
+Speech endpoint単位で分離し、平文保存へのfallbackはしません。暗号化保存が利用できない場合は
+送信前に停止します。secretではないアカウント識別情報は`<state>/auth/`へ別途保存し、
+config・job record・manifest・logには含めません。この認証recordも個人情報として扱ってください。
+ブラウザーのcookieはブラウザー側が管理します。
+`authentication.reuse_cached_credentials: false`、または
+`--no-azure-speech-reuse-cached-credentials`でアカウントを選び直せます。選択結果は次回以降にも
+引き継ぎます。旧版は認証情報を保存しないため、更新後の初回は一度ログインが必要です。
+その後もMFA・tenant policyなどにより再認証を求められる場合があります。
+dry-runは認証cacheを読み書きせず、`authentication_method: InteractiveBrowserCredential`と
+`authentication_interaction: if_required`を表示します。新規送信のmanifestにも同じ認証方式を記録します。
 checkpointから再開する場合は記録済みの方式を維持します。方式の記録がない旧checkpointでは
 過去の送信をブラウザー認証扱いせず、`unknown`と記録します。
 
@@ -605,8 +626,8 @@ replacementを経てschema `"3.0.0"`を永続化します。
 ## 定期実行
 
 無人実行では、`uv tool install .`でinstallし、元メディアと出力に絶対pathを使って、Windows Task
-Schedulerまたはcronからlocal profileを実行します。cloud profileは新規送信ごとにブラウザーでの
-アカウント選択と操作可能なデスクトップが必要なため、無人実行には適しません。終了コードは、
+Schedulerまたはcronからlocal profileを実行します。cloud profileは認証情報を再利用できますが、
+ログイン・MFAが必要なときは操作可能なデスクトップが必要なため、無人実行は保証しません。終了コードは、
 成功`0`、想定内の設定・入力・検証error`2`、中断`130`、想定外error`1`です。
 
 ## 制約とprivacy
