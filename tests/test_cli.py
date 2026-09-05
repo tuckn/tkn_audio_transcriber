@@ -22,6 +22,7 @@ def test_transcribe_help_describes_audio_and_video(capsys: object) -> None:
     captured = capsys.readouterr()  # type: ignore[attr-defined]
     assert "Source audio or video file with an audio stream" in captured.out
     assert "--provider" not in captured.out
+    assert "browser sign-in and account selection" in " ".join(captured.out.split())
 
 
 def test_config_show_outputs_machine_readable_json(
@@ -248,6 +249,8 @@ def test_azure_profile_dry_run_does_not_require_upload_approval(
     assert payload["plan"]["mode"] == "cloud"
     assert payload["plan"]["profile"] == "cloud/azure-ja"
     assert payload["plan"]["provider"] == "azure-speech-fast"
+    assert payload["plan"]["authentication_method"] == "InteractiveBrowserCredential"
+    assert payload["plan"]["account_selection_required"] is True
     assert payload["plan"]["cloud_upload_approval_required"] is True
     assert payload["plan"]["network_calls"] == 0
     assert payload["plan"]["normalized_audio_validation"]["status"] == (

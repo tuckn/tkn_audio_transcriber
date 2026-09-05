@@ -166,7 +166,8 @@ def _parser() -> argparse.ArgumentParser:
         "--allow-cloud-upload",
         action="store_true",
         help=(
-            "Approve uploading FLAC audio for this run only; cannot be saved in config."
+            "Approve uploading FLAC audio for this run only; cannot be saved in config. "
+            "New cloud submissions require browser sign-in and account selection."
         ),
     )
     transcribe.add_argument(

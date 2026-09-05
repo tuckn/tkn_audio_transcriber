@@ -57,6 +57,13 @@ class ColorFormatter(logging.Formatter):
 def configure_logging(
     *, quiet: bool, verbose: bool, stream: TextIO | None = None
 ) -> logging.Logger:
+    # Identity SDK warnings can contain raw sign-in responses and account details.
+    # Keep CLI diagnostics in our sanitized adapter messages, even with --verbose.
+    for namespace in ("azure.identity", "azure.core", "msal"):
+        sdk_logger = logging.getLogger(namespace)
+        sdk_logger.handlers.clear()
+        sdk_logger.addHandler(logging.NullHandler())
+        sdk_logger.propagate = False
     output_stream = sys.stderr if stream is None else stream
     level = logging.DEBUG if verbose else logging.ERROR if quiet else logging.INFO
     handler = logging.StreamHandler(output_stream)

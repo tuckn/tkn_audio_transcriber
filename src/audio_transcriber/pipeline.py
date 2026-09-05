@@ -26,6 +26,7 @@ from .audio_integrity import (
     validate_chunk_coverage,
 )
 from .azure_speech_adapter import (
+    AZURE_AUTHENTICATION_METHOD,
     AzureSpeechFastAdapter,
     AzureTranscription,
     endpoint_type,
@@ -298,6 +299,8 @@ def _dry_run_plan(config: ResolvedConfig) -> dict[str, object]:
             "locale": transcription.locale,
             "diarization_enabled": transcription.diarization_enabled,
             "upload_format": "flac",
+            "authentication_method": AZURE_AUTHENTICATION_METHOD,
+            "account_selection_required": True,
             "cloud_upload_approval_required": True,
             "cloud_upload_approved": False,
             "network_calls": 0,
@@ -488,6 +491,7 @@ class TranscriptionPipeline:
             attempts = 0
             retries = 0
             request_id: str | None = None
+            authentication_method = "local"
             chunks: list[Path] = []
             chunk_duration_seconds: float | None = None
             if isinstance(transcription, LocalTranscriptionConfig):
@@ -565,6 +569,7 @@ class TranscriptionPipeline:
                 attempts = len(chunks)
             else:
                 validate_azure_audio_duration(normalized_info)
+                authentication_method = AZURE_AUTHENTICATION_METHOD
                 progress = read_json(progress_path) if progress_path.exists() else {}
                 completed_request = progress.get("azure_request_completed") is True
                 segments = _load_segments(checkpoint_segments) if completed_request else []
@@ -573,6 +578,15 @@ class TranscriptionPipeline:
                     retries = int(progress.get("retries", max(0, attempts - 1)))
                     raw_request_id = progress.get("request_id")
                     request_id = raw_request_id if isinstance(raw_request_id, str) else None
+                    recorded_auth = progress.get("authentication_method")
+                    # Old checkpoints did not record authentication. Do not attribute
+                    # an earlier submission to today's browser-only implementation.
+                    authentication_method = (
+                        recorded_auth
+                        if isinstance(recorded_auth, str)
+                        and recorded_auth in (AZURE_AUTHENTICATION_METHOD, "DefaultAzureCredential")
+                        else "unknown"
+                    )
                     self.logger.info("Resuming from completed Azure Speech response checkpoint")
                 else:
                     ensure_free_space(
@@ -614,6 +628,7 @@ class TranscriptionPipeline:
                         {
                             "schema_version": 1,
                             "azure_request_completed": True,
+                            "authentication_method": authentication_method,
                             "segment_count": len(segments),
                             "attempts": attempts,
                             "retries": retries,
@@ -712,7 +727,6 @@ class TranscriptionPipeline:
                 region: str | None = None
                 locale = transcription.language
                 diarization_enabled = False
-                authentication_method = "local"
                 model_requested: str | None = transcription.model
             else:
                 settings = {
@@ -730,7 +744,6 @@ class TranscriptionPipeline:
                 region = transcription.region
                 locale = transcription.locale
                 diarization_enabled = transcription.diarization_enabled
-                authentication_method = "DefaultAzureCredential"
                 model_requested = None
             provenance: dict[str, object] = {
                 "mode": transcription.mode,

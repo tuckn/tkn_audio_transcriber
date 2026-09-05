@@ -50,8 +50,10 @@ That final downstream stage is not part of the base CLI.
   or a FLAC upload file for the Azure provider
 - For `device: cuda` on Windows: an NVIDIA driver, CUDA Toolkit 12 with cuBLAS,
   cuDNN 9 for CUDA 12, and both DLL directories available on `PATH`
-- For Azure: an Entra identity with the Speech User role and network access to the
-  configured Speech endpoint
+- For Azure: an Entra identity with the Speech User role, an interactive desktop with
+  a default browser, and network access to Microsoft Entra and the configured Speech
+  endpoint. The browser must be able to return to a local `localhost` callback;
+  Azure CLI is not required
 
 There is no extension allowlist. Any local audio or video file that `ffmpeg` can decode
 and that contains at least one audio stream is accepted. This includes common inputs
@@ -333,9 +335,39 @@ responsible for confirming that the selected input is permitted for cloud proces
 before adding the flag. Azure charges can begin when the normalized audio POST is
 submitted; dry-run, hashing, and local normalization do not call the Speech API.
 
-Authentication uses `DefaultAzureCredential` and the Cognitive Services token scope.
-Subscription keys are unsupported. The CLI never runs `az login` or interactive browser
-authentication. Sign in beforehand with an approved Entra method.
+Authentication is fixed to
+[`InteractiveBrowserCredential`](https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity.interactivebrowsercredential?view=azure-python)
+with the Cognitive Services token scope. No authentication settings or secrets need to
+be added to `config.yaml`; subscription keys are unsupported.
+
+1. Before each new Azure submission, the CLI opens the default browser and requests
+   an account picker (`prompt=select_account`), even if the browser is already signed in.
+2. Select the work or school account with access to the configured Speech resource and
+   complete any sign-in, consent, or MFA required by Microsoft Entra. Account selection
+   does not force password re-entry or a browser sign-out.
+3. After authentication completes, the CLI obtains the token and submits the audio.
+   HTTP retries within that submission reuse the selected identity without another picker.
+
+The CLI does not use `DefaultAzureCredential`, Azure CLI sign-in, environment-based
+credentials, or a shared token cache as fallback. Authentication failure, cancellation,
+or timeout stops before upload. The callback wait is five minutes; closing the browser
+may leave the CLI waiting until that timeout, so use Ctrl+C to stop immediately.
+`--dry-run`, missing upload approval, and reuse of completed outputs or a completed
+Azure response checkpoint do not open the browser.
+
+Tokens and the SDK authentication record are kept only in process memory; the CLI
+does not persist them or the selected account name to config, job state, manifests,
+or logs. Browser cookies remain managed by the browser. Dry-run reports
+`authentication_method: InteractiveBrowserCredential` and `account_selection_required: true`;
+manifests for new submissions record the same authentication method. Resumed checkpoints
+retain their recorded method; legacy checkpoints without that field report `unknown`
+instead of claiming browser authentication for a past submission.
+
+This implementation uses the SDK's default Azure development application, not a
+private client or tenant ID embedded in this repository. Tenant consent policies can
+block that application. A dedicated Entra public-client app registration is recommended
+for production/distributed use; custom client/tenant configuration is not implemented
+yet. The SDK default targets work or school accounts in Azure Public Cloud.
 
 The CLI validates a local mono/16 kHz/16-bit PCM WAV, then losslessly encodes it to FLAC
 for upload (`audio/flac`). Compression preserves the normalized samples; the sample rate
@@ -611,8 +643,10 @@ with validation, backup, and atomic replacement.
 
 ## Scheduled operation
 
-Install the CLI with `uv tool install .`, use absolute source-media/output paths,
-and run the same `transcribe` command from Windows Task Scheduler or cron. The
+For unattended operation, install the CLI with `uv tool install .`, use absolute
+source-media/output paths, and run a local profile from Windows Task Scheduler or cron.
+Cloud profiles require an interactive desktop and browser account selection for each
+new submission; they are not suitable for unattended jobs. The
 command returns `0` on success, `2` for expected configuration/input/validation
 errors, `130` for interruption, and `1` for unexpected failures.
 

@@ -45,7 +45,9 @@ Transcriptionという実装を表します。
   送信用FLACを保存できる空き容量
 - Windowsで`device: cuda`を使う場合は、NVIDIA driver、cuBLASを含むCUDA Toolkit
   12、CUDA 12用cuDNN 9、および両方のDLL directoryが登録された`PATH`
-- Azureでは、Speech User roleを持つEntra identityと設定済みSpeech endpointへの接続
+- Azureでは、Speech User roleを持つEntra identity、既定のブラウザーを操作できる
+  デスクトップ環境、Microsoft Entraおよび設定済みSpeech endpointへの接続が必要。
+  ブラウザーからローカルの`localhost` callbackへ戻れる必要がある。Azure CLIは不要
 
 入力拡張子の固定リストは設けていません。`ffmpeg`がデコードでき、音声ストリームを
 1つ以上含むローカルの音声・動画ファイルを受け付けます。代表例は`.wav`、`.flac`、
@@ -311,9 +313,36 @@ CLIは録音内容の機密区分を判定できません。flagを付ける前�
 許可されたdataであることを利用者が確認します。正規化音声のPOST時点からAzure課金が
 発生し得ます。dry-run、hash計算、local正規化はSpeech APIを呼びません。
 
-認証には`DefaultAzureCredential`とCognitive Services token scopeを使い、subscription
-keyは受け付けません。CLIから`az login`やbrowser対話認証は行わないため、許可された
-Entra手段で事前にsign inしてください。
+認証は
+[`InteractiveBrowserCredential`](https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity.interactivebrowsercredential?view=azure-python)
+によるブラウザー認証に固定し、Cognitive Services token scopeを使います。
+`config.yaml`に認証設定やsecretを追加する必要はありません。subscription keyは受け付けません。
+
+1. Azureへの新規送信前に既定のブラウザーを開き、アカウント選択画面を要求します
+   （`prompt=select_account`）。ブラウザーがログイン済みでも選択を要求します。
+2. 設定したSpeech resourceを利用できる職場または学校アカウントを選び、Microsoft Entraが
+   求めるログイン・同意・MFAを完了します。アカウント選択は、パスワード再入力や
+   ブラウザーからのログアウトを強制するものではありません。
+3. 認証完了後にtokenを取得し、音声を送信します。同じ送信内のHTTP retryでは選択した
+   identityを使い、再選択は求めません。
+
+`DefaultAzureCredential`、Azure CLIのログイン、環境変数の認証情報、共有token cacheへは
+fallbackしません。認証失敗・キャンセル・timeoutでは音声送信前に停止します。callbackの
+待機時間は5分です。ブラウザーを閉じただけではtimeoutまで待つ場合があるため、すぐに止める
+場合はCtrl+Cを使います。`--dry-run`、送信承認flagなし、完了済み出力やAzure応答取得済み
+checkpointの再利用では、ブラウザーを開きません。
+
+tokenとSDKの認証recordはprocessのメモリだけに保持し、これらや選択したアカウント名を
+config、job state、manifest、logへ保存しません。ブラウザーのcookieはブラウザー側が管理します。
+dry-runには`authentication_method: InteractiveBrowserCredential`と
+`account_selection_required: true`を表示し、新規送信のmanifestにも同じ認証方式を記録します。
+checkpointから再開する場合は記録済みの方式を維持します。方式の記録がない旧checkpointでは
+過去の送信をブラウザー認証扱いせず、`unknown`と記録します。
+
+この実装はSDK既定のAzure開発用アプリを使い、個人専用のclient IDやtenant IDをリポジトリに
+埋め込んでいません。tenantの同意policyによって、このアプリの利用が拒否される場合があります。
+本番・配布用途では専用のEntra public-clientアプリ登録を推奨しますが、独自のclient/tenantを
+指定する設定はまだ実装していません。SDKの既定はAzure Public Cloudの職場・学校アカウント向けです。
 
 CLIはローカルでモノラル16 kHz・16 bit PCM WAVを検証した後、送信用のFLACへ可逆圧縮します
 （`audio/flac`）。圧縮は正規化済みの音声サンプルを保持し、サンプリング周波数とチャンネル数は
@@ -575,8 +604,9 @@ replacementを経てschema `"3.0.0"`を永続化します。
 
 ## 定期実行
 
-`uv tool install .`でinstallし、元メディアと出力に絶対pathを使えば、Windows Task
-Schedulerまたはcronから同じ`transcribe`コマンドを実行できます。終了コードは、
+無人実行では、`uv tool install .`でinstallし、元メディアと出力に絶対pathを使って、Windows Task
+Schedulerまたはcronからlocal profileを実行します。cloud profileは新規送信ごとにブラウザーでの
+アカウント選択と操作可能なデスクトップが必要なため、無人実行には適しません。終了コードは、
 成功`0`、想定内の設定・入力・検証error`2`、中断`130`、想定外error`1`です。
 
 ## 制約とprivacy

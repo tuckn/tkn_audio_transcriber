@@ -67,3 +67,28 @@ def test_color_and_no_color(monkeypatch: pytest.MonkeyPatch) -> None:
     logger = configure_logging(quiet=False, verbose=False, stream=no_color)
     log_success(logger, "ok")
     assert "\x1b[" not in no_color.getvalue()
+
+
+@pytest.mark.parametrize("verbose", [False, True])
+def test_auth_sdk_diagnostics_do_not_leak_account_details(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
+    verbose: bool,
+) -> None:
+    for namespace in ("azure.identity", "azure.core", "msal"):
+        sdk_logger = logging.getLogger(namespace)
+        monkeypatch.setattr(sdk_logger, "handlers", [])
+        monkeypatch.setattr(sdk_logger, "propagate", True)
+    stream = TerminalBuffer(False)
+    logger = configure_logging(quiet=False, verbose=verbose, stream=stream)
+
+    for namespace in (
+        "azure.identity._internal.interactive", "azure.core.pipeline", "msal.application"
+    ):
+        logging.getLogger(namespace).warning("CANARY_PRIVATE_SIGN_IN_RESPONSE")
+    logger.error("Azure Speech browser authentication failed before submission")
+
+    assert "browser authentication failed" in stream.getvalue()
+    captured = capsys.readouterr()
+    assert "CANARY_PRIVATE" not in stream.getvalue() + caplog.text + captured.out + captured.err

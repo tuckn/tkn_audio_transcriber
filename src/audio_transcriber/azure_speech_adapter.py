@@ -4,7 +4,7 @@ import json
 import logging
 import random
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -20,6 +20,8 @@ from .models import Segment
 
 AZURE_SPEECH_TOKEN_SCOPE = "https://cognitiveservices.azure.com/.default"
 AZURE_SPEECH_TRANSCRIBE_PATH = "/speechtotext/transcriptions:transcribe"
+AZURE_AUTHENTICATION_METHOD = "InteractiveBrowserCredential"
+BROWSER_AUTH_TIMEOUT_SECONDS = 300
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 NON_RETRYABLE_STATUS_CODES = {400, 401, 403, 413}
 
@@ -28,7 +30,9 @@ class AccessTokenLike(Protocol):
     token: str
 
 
-class TokenCredentialLike(Protocol):
+class BrowserCredentialLike(Protocol):
+    def authenticate(self, *, scopes: Iterable[str]) -> object: ...
+
     def get_token(self, *scopes: str, **kwargs: Any) -> AccessTokenLike: ...
 
 
@@ -38,7 +42,7 @@ class HttpClientLike(Protocol):
     def close(self) -> None: ...
 
 
-CredentialFactory = Callable[[], TokenCredentialLike]
+CredentialFactory = Callable[[], BrowserCredentialLike]
 ClientFactory = Callable[[float], HttpClientLike]
 Sleep = Callable[[float], None]
 Jitter = Callable[[float, float], float]
@@ -52,12 +56,16 @@ class AzureTranscription:
     request_id: str | None
 
 
-def _default_credential_factory() -> TokenCredentialLike:
-    from azure.identity import DefaultAzureCredential
+def _default_credential_factory() -> BrowserCredentialLike:
+    from azure.identity import InteractiveBrowserCredential
 
     return cast(
-        TokenCredentialLike,
-        DefaultAzureCredential(exclude_interactive_browser_credential=True),
+        BrowserCredentialLike,
+        InteractiveBrowserCredential(
+            disable_automatic_authentication=True,
+            cache_persistence_options=None,
+            timeout=BROWSER_AUTH_TIMEOUT_SECONDS,
+        ),
     )
 
 
@@ -226,11 +234,23 @@ class AzureSpeechFastAdapter:
         client: HttpClientLike | None = None
         try:
             try:
+                self.logger.info(
+                    "Opening your browser: select the Microsoft account with access to "
+                    "the configured Speech resource (authentication timeout: %d seconds)",
+                    BROWSER_AUTH_TIMEOUT_SECONDS,
+                )
+                # A fresh browser credential is created for each submission, without an
+                # authentication record or persistent cache. Its interactive flow uses
+                # prompt=select_account; HTTP retries below reuse this selected identity.
+                credential.authenticate(scopes=[AZURE_SPEECH_TOKEN_SCOPE])
                 token = credential.get_token(AZURE_SPEECH_TOKEN_SCOPE).token
             except Exception as exc:
                 raise AzureSpeechError(
-                    "Azure Speech Entra authentication failed before submission"
+                    "Azure Speech browser authentication failed or timed out before submission. "
+                    "Complete account selection in the browser and retry; "
+                    "a browser and a local callback connection must be available."
                 ) from exc
+            self.logger.info("Browser account selection completed; preparing the Speech upload")
             try:
                 client = self.client_factory(timeout)
             except Exception as exc:

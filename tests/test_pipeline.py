@@ -512,6 +512,8 @@ def test_azure_dry_run_never_creates_clients_or_writes(tmp_path: Path) -> None:
         "locale": "ja-JP",
         "diarization_enabled": True,
         "upload_format": "flac",
+        "authentication_method": "InteractiveBrowserCredential",
+        "account_selection_required": True,
         "cloud_upload_approval_required": True,
         "cloud_upload_approved": False,
         "network_calls": 0,
@@ -603,7 +605,7 @@ def test_azure_whole_file_flow_preserves_speakers_and_provenance(
         "region": "japaneast",
         "locale": "ja-JP",
         "diarization_enabled": True,
-        "authentication_method": "DefaultAzureCredential",
+        "authentication_method": "InteractiveBrowserCredential",
         "source_sha256": sha256_file(source),
         "decoded_duration_seconds": 20.0,
         "attempts": 2,
@@ -766,8 +768,20 @@ def test_azure_encoding_failure_stops_before_clients_and_partial_flac_is_regener
     assert factory_calls == ["created"]
 
 
+@pytest.mark.parametrize(
+    ("recorded_method", "expected_method"),
+    [
+        ("InteractiveBrowserCredential", "InteractiveBrowserCredential"),
+        ("DefaultAzureCredential", "DefaultAzureCredential"),
+        (None, "unknown"),
+        ("CANARY_UNEXPECTED_AUTH_VALUE", "unknown"),
+    ],
+)
 def test_azure_completed_checkpoint_skips_flac_encoding_and_resubmission(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    recorded_method: str | None,
+    expected_method: str,
 ) -> None:
     source = tmp_path / "meeting.mp4"
     source.write_bytes(b"source")
@@ -788,12 +802,23 @@ def test_azure_completed_checkpoint_skips_flac_encoding_and_resubmission(
         with pytest.raises(RuntimeError, match="interrupted after Azure"):
             pipeline.transcribe(source, dry_run=False, overwrite=False, allow_cloud_upload=True)
 
+    progress_path = next((tmp_path / "state" / "jobs").glob("*/progress.json"))
+    progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert progress["authentication_method"] == "InteractiveBrowserCredential"
+    if recorded_method is None:
+        del progress["authentication_method"]
+    else:
+        progress["authentication_method"] = recorded_method
+    progress_path.write_text(json.dumps(progress), encoding="utf-8")
+
     result = pipeline.transcribe(
         source, dry_run=False, overwrite=False, allow_cloud_upload=True
     )
     assert result.status == "created"
     assert ffmpeg_calls.count("encode-flac") == 1
     assert azure_calls == ["normalized_16k_mono.flac"]
+    manifest = json.loads(result.outputs.manifest.read_text(encoding="utf-8"))
+    assert manifest["provenance"]["authentication_method"] == expected_method
 
 
 def test_provider_changes_fingerprint(tmp_path: Path) -> None:
