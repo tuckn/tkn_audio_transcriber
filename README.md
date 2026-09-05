@@ -344,8 +344,19 @@ Azure recognition defaults to no diarization and no profanity masking. Explicit 
 properties are included by `config init`. Set `phrase_list.phrases` to a list of up to
 500 non-empty terms (for example, company names or specialist vocabulary); an empty list
 disables phrase hints. Phrase lists require API version `2025-10-15` or later. Hints bias
-recognition, not guaranteed corrections: prefer a short relevant list. The terms are sent
-to Azure with the audio and recorded in local job/manifest settings. `profanity_filter_mode`
+recognition, not guaranteed corrections: prefer a short relevant list. Write each term in
+the form wanted in the transcript, not as a hiragana pronunciation. For example:
+
+```yaml
+phrase_list:
+  phrases:
+    - アクセンチュア
+    - Workday
+    - Microsoft Azure
+```
+
+Phrase lists do not support a written-form-to-pronunciation mapping. The terms are sent to
+Azure with the audio and recorded in local job/manifest settings. `profanity_filter_mode`
 accepts `"None"`, `Masked`, `Removed`, or `Tags`. Changed recognition settings change the
 job fingerprint; use a new profile name/output directory to preserve previous comparisons,
 or explicitly use `--overwrite`. These settings do not apply to local Whisper profiles.

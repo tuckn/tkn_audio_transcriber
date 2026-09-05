@@ -322,7 +322,18 @@ Azureの既定値は話者分離なし・伏字なしです。`config init`に�
 `phrase_list.phrases`には会社名・専門用語など、空でない文字列を最大500語設定できます。
 空リストでは用語補助を送りません。API `2025-10-15`以降が必要です。認識候補を優先させる
 機能であり、正解を強制する辞書ではないため、まずは会話に関連する少数の用語から試します。
-用語は音声とともにAzureへ送信し、ローカルのjob・manifest設定にも記録します。
+ひらがなの読みではなく、文字起こし結果に出したい表記を列挙します。たとえば次のように指定します。
+
+```yaml
+phrase_list:
+  phrases:
+    - アクセンチュア
+    - Workday
+    - Microsoft Azure
+```
+
+表記と読みの対応付けは`phrase_list`では指定できません。用語は音声とともにAzureへ送信し、
+ローカルのjob・manifest設定にも記録します。
 `profanity_filter_mode`は`"None"`、`Masked`、`Removed`、`Tags`から選びます。
 認識設定を変更するとjobのfingerprintも変わります。比較結果を残す場合は別profile名・
 出力先を使い、置換する場合だけ`--overwrite`を指定します。これらはlocal Whisperには適用しません。
