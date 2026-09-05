@@ -62,7 +62,7 @@ such as `.wav`, `.flac`, `.mp3`, `.m4a`, and `.mp4`.
 Use CPU with `small` for a lightweight installation check. For transcripts used
 as downstream evidence, start with `large-v3` when resources permit. See
 [local settings](#local-profile-settings) and the
-[CPU/GPU benchmarks](#reference-cpugpu-benchmarks) for the trade-offs.
+[transcription benchmarks](#reference-transcription-benchmarks) for the trade-offs.
 
 ## Install
 
@@ -702,7 +702,9 @@ errors, `130` for interruption, and `1` for unexpected failures.
 - The manifest records the source media path and hashes for provenance; treat it as
   local operational metadata when paths are sensitive
 
-## Reference CPU/GPU benchmarks
+## Reference transcription benchmarks
+
+A same-recording comparison of CPU, GPU, and Azure transcription, not summarization.
 
 ### Desktop CPU and CUDA comparison (2026-09-05 review)
 
@@ -753,10 +755,84 @@ Text review, without an audio-verified reference transcript, suggests:
   beam 1. GPU float16 beam 5 took roughly one eighth of CPU int8 beam 5's time;
   device, compute type, and application version differ in that comparison.
 
-There is no accuracy score or proven CPU quality winner here. One private
+There is no objective recognition accuracy measurement or proven CPU quality winner here. One private
 recording, single runs, and segment counts cannot establish a universal optimum.
 The legacy small timing is not a controlled beam-only comparison. Re-run on
 representative audio and the actual target PC before adopting a profile.
+
+### Azure comparison and final assessment (2026-09-05)
+
+The same source SHA-256 and 758.8-second audio were processed with Azure Speech Fast
+Transcription, Japan East, API `2025-10-15`, `ja-JP`, and one whole-file FLAC request.
+The same desktop submitted the audio, but Azure recognition ran in the cloud. The latest
+MD/SRT/JSONL hashes and sizes and all 26 segment time ranges passed validation; the run
+used one submission with no retries.
+
+| Azure test condition | App version | Tracked elapsed | Segments |
+| --- | --- | ---: | ---: |
+| Diarization on, no phrase hints, profanity setting omitted | 0.9.0 | 29s | 137 |
+| Diarization off, no phrase hints, profanity setting omitted | 0.9.0 | 3m41s (includes interactive sign-in wait) | 26 |
+| Diarization off, four phrase hints, no profanity filtering | 0.10.0 | 27s | 26 |
+
+The latest job ran from 16:24:58 to 16:25:25 JST. Timing includes normalization, encoding,
+authentication, upload, recognition, and output persistence, but excludes source hashing
+before job start. Authentication and Azure-internal processing times were not recorded
+separately, so these numbers cannot isolate cache benefits or pure recognition speed.
+The earlier no-diarization text was compared using its retained job checkpoint after
+the output file had been replaced.
+
+- With phrase hints absent, switching off diarization produced exactly the same 4,280
+  characters after joining segments and removing whitespace. Fewer words were split at
+  speaker boundaries, but recognition content did not improve.
+- The latest output improved a supplied role name and business-system name and recovered
+  some short wording absent before. Repetition, malformed dates, inconsistent proper nouns,
+  and contextually implausible words remain. Profanity settings and app versions also changed
+  between these single runs, so not every difference can be attributed to phrase hints.
+  No quality improvement from disabling profanity filtering was established in this sample.
+- The latest Azure output and GPU `large-v3` / beam 5 / float16 / 600 seconds both receive
+  a provisional **8/10**. Azure is stronger at business terms and some meaning-bearing
+  passages; GPU offers shorter reviewable segments and better wording for some dates and
+  utterances. Neither wins at every passage.
+
+#### Azure versus Whisper transcription quality scores
+
+These eight representative conditions use the same recording. Whisper means `faster-whisper`,
+with Japanese specified and `chunk_seconds: 600` throughout. Both Azure rows have diarization
+disabled. Quality scores exclude speed and cost, emphasizing retained meaning, mistranscriptions,
+and suspected omissions or unsupported additions.
+
+| Method | Main settings | Provisional quality / 10 | Tracked elapsed | Rationale |
+| --- | --- | ---: | ---: | --- |
+| Azure Speech Fast | Phrase list on (four terms), no profanity filtering | **8** | 27s | Better business-term spelling; repetition, dates, and some wording still need correction |
+| Azure Speech Fast | No phrase list, profanity setting omitted | **7** | 3m41s* | Broad meaning retained, but business-term errors and repetition remain |
+| Whisper / GPU | `large-v3`, beam **5**, `float16` | **8** | 41s | Relatively few suspicious additions; some terms and negation still need checking |
+| Whisper / CPU | `large-v3`, beam **1**, `int8` | **7** | 3m41s | Broad meaning retained without name-like prefixes, but term and meaning errors remain |
+| Whisper / CPU | `large-v3`, beam **3**, `int8` | **7** | 4m46s | Some wording changes, but name-like prefixes and a suspicious closing formula appear near the end |
+| Whisper / CPU | `large-v3`, beam **5**, `int8` | **7** | 5m30s | No uniform gain over beam 3; name-like prefixes and potentially omitted short responses remain |
+| Whisper / CPU | `large-v3`, beam **3**, `float32` | **7** | 11m25s | Partial improvements do not justify a higher overall score; suspicious prefixes and meaning errors remain |
+| Whisper / CPU | `small`, beam **3**, `int8` | **6** | 56s | Topics remain recognizable, but important-term errors, name-like prefixes, and changed meanings need extensive correction |
+
+*The no-phrase-list Azure timing includes interactive sign-in wait; it is not 3m41s of
+recognition processing. Local timings come from the desktop above. Equal integer scores
+represent broad assessment bands, not identical text or error counts. No clear overall quality
+ranking is assigned among these CPU large-v3 conditions. The single-run and configuration
+confounds described above still apply.
+
+These are subjective text-review scores without a reference transcript or a full audio
+audit: 10 means no omissions or mistranscriptions; 9 mainly minor orthographic corrections;
+8 broad meaning retained with local meaning-bearing corrections needed; 7 or below more
+extensive review needed. This assessment cannot verify a perfect 10. Scores are not CER,
+WER, or accuracy percentages: 8 does not mean 80% correct. Fewer segments do not by themselves
+indicate omitted speech.
+
+For this sample, choose Azure with a short relevant phrase list when cloud upload is allowed,
+or GPU `large-v3` / beam 5 / float16 / 600 seconds for local-only CUDA use. The 900-second
+GPU follow-up also took 41s but introduced more name-like prefixes near the end, so start
+at 600 seconds. For the CPU-only work laptop, the measurements below support `large-v3` /
+int8 / beam 1 as a resource/latency-conscious starting point, comparing beam 3 when needed.
+Neither beam 5 nor float32 is proven universally better. Keep the raw transcript; create
+context/glossary-assisted corrections separately and verify dates, names, negation, and
+decisions against the audio before downstream use.
 
 ### CPU-only laptop: historical reference (2026-09-04)
 
