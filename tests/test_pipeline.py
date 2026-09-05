@@ -254,6 +254,41 @@ def test_transcribe_ensures_missing_model_before_audio_processing(
     ]
 
 
+def test_cuda_runtime_is_checked_before_hashing_model_or_audio_processing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "meeting.flac"
+    source.write_bytes(b"immutable source")
+    calls: list[str] = []
+
+    def reject_cuda(device: str) -> None:
+        calls.append(f"cuda:{device}")
+        raise ValidationError("CUDA GPU runtime preflight failed before audio processing")
+
+    def reject_hash(path: Path) -> str:
+        raise AssertionError(f"source must not be hashed after failed preflight: {path}")
+
+    def reject_model(**kwargs: object) -> Path:
+        raise AssertionError(f"model must not be resolved after failed preflight: {kwargs}")
+
+    monkeypatch.setattr("audio_transcriber.pipeline.validate_cuda_runtime", reject_cuda)
+    monkeypatch.setattr("audio_transcriber.pipeline.sha256_file", reject_hash)
+    monkeypatch.setattr("audio_transcriber.pipeline.ensure_local_model", reject_model)
+    ffmpeg_calls: list[str] = []
+    pipeline = TranscriptionPipeline(
+        config=make_config(tmp_path, profile="local/gpu-quality"),
+        logger=make_logger(),
+        ffmpeg=FakeFfmpeg(ffmpeg_calls),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ValidationError, match="CUDA GPU runtime preflight failed"):
+        pipeline.transcribe(source, dry_run=False, overwrite=False)
+
+    assert calls == ["cuda:cuda"]
+    assert ffmpeg_calls == []
+    assert not (tmp_path / "state").exists()
+
+
 def test_end_to_end_commit_validate_unchanged_and_source_immutability(
     tmp_path: Path,
 ) -> None:

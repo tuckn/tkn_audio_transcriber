@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from audio_transcriber.cli import main
+from audio_transcriber.errors import ValidationError
 
 
 def test_help_and_version(capsys: object) -> None:
@@ -174,6 +175,36 @@ def test_profile_switches_transcription_model_for_dry_run(
     assert payload["plan"]["profile"] == "local/local-large"
     assert payload["plan"]["provider"] == "faster-whisper"
     assert payload["outputs"]["markdown"].endswith("audio__local__local-large_transcript.md")
+
+
+def test_cuda_preflight_failure_is_an_actionable_cli_error(
+    tmp_path: Path, monkeypatch: object, capsys: object
+) -> None:
+    isolated_home = tmp_path / "home"
+    isolated_home.mkdir()
+    source = tmp_path / "audio.wav"
+    source.write_bytes(b"audio")
+    monkeypatch.setenv("HOME", str(isolated_home))  # type: ignore[attr-defined]
+    monkeypatch.setenv("USERPROFILE", str(isolated_home))  # type: ignore[attr-defined]
+    monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
+
+    def reject_cuda(device: str) -> None:
+        raise ValidationError(
+            "CUDA GPU runtime preflight failed before audio processing: test failure"
+        )
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "audio_transcriber.pipeline.validate_cuda_runtime", reject_cuda
+    )
+
+    assert (
+        main(["--profile", "local/gpu-quality", "transcribe", str(source)]) == 2
+    )
+
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    assert captured.out == ""
+    assert "[ERROR] CUDA GPU runtime preflight failed" in captured.err
+    assert "Unexpected failure" not in captured.err
 
 
 def test_azure_profile_dry_run_does_not_require_upload_approval(

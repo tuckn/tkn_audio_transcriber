@@ -42,39 +42,17 @@ Transcriptionという実装を表します。
 - [`uv`](https://docs.astral.sh/uv/)
 - `PATH`から実行できる`ffmpeg`、または設定した`processing.ffmpeg.executable`
 - モノラル16 kHz WAVと、ローカルproviderでは分割チャンクを保存できる空き容量
+- Windowsで`device: cuda`を使う場合は、NVIDIA driver、cuBLASを含むCUDA Toolkit
+  12、CUDA 12用cuDNN 9、および両方のDLL directoryが登録された`PATH`
 - Azureでは、Speech User roleを持つEntra identityと設定済みSpeech endpointへの接続
 
 入力拡張子の固定リストは設けていません。`ffmpeg`がデコードでき、音声ストリームを
 1つ以上含むローカルの音声・動画ファイルを受け付けます。代表例は`.wav`、`.flac`、
 `.mp3`、`.m4a`、`.mp4`です。
 
-最初はCPUと`small`モデルを推奨します。`medium`は一般に認識精度が上がる一方、
-メモリ使用量と処理時間が増えます。
-
-### CPU参考ベンチマーク
-
-2026-09-04に、758.8秒（12:38.8）の日本語会話FLACを使用して測定しました。
-tkn-audio-transcriber 0.7.0とfaster-whisperを使用し、全実行でCPU、
-`compute_type: int8`、`language: ja`、`chunk_seconds: 600`を指定しました。
-PCはDell Latitude 7340、Intel Core i7-1365U（物理10コア／論理12プロセッサ）、
-メモリ31.6 GBで、CUDA GPUはありません。
-
-| profile | model | `beam_size` | 経過時間 | segment数 | 参考品質 |
-| --- | --- | ---: | ---: | ---: | --- |
-| `local-small` | `small` | 1 | 3分24秒 | 167 | 精度は低め。簡易確認や検索向け |
-| `local-large` | `large-v3` | 1 | 約17分43秒[^cpu-benchmark-resume] | 270 | 実用的な精度 |
-| `local-quality`（独自設定） | `large-v3` | 3 | 34分26秒 | 267 | 今回では最良だが、beam 1との差はわずか |
-
-`local-quality`は測定用の独自profileであり、同梱profileではありません。品質は
-正解transcriptなしの手動確認によるため、再現可能な精度scoreではなく参考評価です。
-処理時間はmachine負荷、温度、model cacheの状態、音声、application/modelのversionに
-左右されます。今回の比較では、`small`から`large-v3`への変更が大きな品質向上を
-もたらしました。一方、beamを1から3に増やすと、わずかな品質向上に対して経過時間は
-ほぼ2倍になりました。
-
-[^cpu-benchmark-resume]: 約17分43秒は、validation failureまで進んだ最初の17分16秒と、
-    timestamp validation修正後の再開27秒を合計した概算の稼働時間です。単一の
-    clean runによる測定ではありません。
+軽量な動作確認にはCPUと`small`を使います。後工程の根拠となる文字起こしでは、
+リソースが許せば`large-v3`から検討します。選び方は[ローカル設定](#ローカルprofileの設定)と
+[CPUGPU参考ベンチマーク](#cpugpu参考ベンチマーク)を参照してください。
 
 ## インストール
 
@@ -95,8 +73,6 @@ uv tool install . --reinstall
 
 ## 初期設定
 
-applicationに同梱されたexampleからユーザー設定を作成し、編集します。
-
 ```console
 tkn-audio-transcriber config init
 ```
@@ -115,7 +91,7 @@ tkn-audio-transcriber config init .tkn/config.yaml
 - ユーザー設定: `~/.tkn/audio_transcriber/config.yaml`
 - 作業ディレクトリ固有の上書き: `./.tkn/config.yaml`
 
-実設定の`./.tkn/config.yaml`はGitの除外対象です。文字起こし結果は既定でcurrent
+文字起こし結果は既定でcurrent
 working directoryへ出力します。明示すると次の設定と同じです。
 
 ```yaml
@@ -145,6 +121,103 @@ transcription:
 tkn-audio-transcriber config profiles
 tkn-audio-transcriber --profile local/gpu-quality transcribe "C:\path\to\meeting.flac"
 ```
+
+### ローカルprofileの設定
+
+以下は`transcription.modes.local.profiles.<name>`に指定する、ローカル
+`faster-whisper`用の設定です。Azure Speechには適用しません。推奨値は比較を始める
+ための候補であり、最高精度を保証するものではありません。
+
+| 設定              | 意味と実用上の影響                                                                                                                                                                                                                         |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `model`         | 音声認識モデル。品質重視なら多言語対応の`large-v3`。メモリや待ち時間が厳しければ`medium`、次に`small`を検討します。大型モデルでもすべての単語が改善するとは限りません。                                                              |
+| `language`      | 音声の言語。日本語なら`ja`。このCLIでは空でない文字列が必要で、空欄/nullは自動判定の指定になりません。翻訳先言語ではありません。                                                                                                         |
+| `chunk_seconds` | 音声ファイルの外部分割とcheckpointの間隔。正の整数秒で指定し、まずは`600`。短くすると中断時のやり直し範囲が減りますが、発話を切る境界が増えます。                                                                                        |
+| `beam_size`     | 文字列の生成時に探索する候補の幅。`5`は品質を重視した出発点、`3`や`1`は時間短縮の候補です。増やしても誤認や幻覚が必ず減るわけではありません。                                                                                        |
+| `compute_type`  | 計算精度・量子化方式。CUDAなら`float16`、CPUなら`int8`から始めます。CPUでも`float32`を使えますが、リソース消費と待ち時間が増え得ます。速度だけでなく認識文も変わりますが、計算精度の高さと文字起こし精度の高さは同義ではありません。 |
+| `device`        | 推論の実行先。`cpu`またはNVIDIAの`cuda`。CUDAには下記runtimeが必要です。GPUは重い設定を速く動かす手段で、同じモデルの認識精度を本質的に上げるものではありません。                                                                      |
+
+| 用途                                  | model                     | beam | compute     | device   |
+| ------------------------------------- | ------------------------- | ---: | ----------- | -------- |
+| CUDA・品質重視の基本設定              | `large-v3`              |    5 | `float16` | `cuda` |
+| CPU・品質重視の比較候補               | `large-v3`              |    5 | `int8`    | `cpu`  |
+| CPU・普段使いのリソース／時間バランス | `large-v3`              |    1 | `int8`    | `cpu`  |
+| CPU・中間の速度／品質を試す           | `large-v3`              |    3 | `int8`    | `cpu`  |
+| CPU・省メモリまたは簡易確認           | `medium`または`small` |    1 | `int8`    | `cpu`  |
+
+日本語の比較では`language: ja`、`chunk_seconds: 600`を揃えます。この表は同梱profileの
+追加・改名を意味しません。32 GB級のCPU専用ノートPCでも`large-v3`は検討できますが、
+CPUの連続負荷、冷却、他アプリによって待ち時間や操作感が制約になります。beamを下げる
+操作は主に探索量・処理時間を減らすもので、CPU使用率を制限する設定ではありません。
+CPUスレッド数は現在profileから指定できません。`float32`は自動的な上位設定とせず、
+重要な誤認があるときのA/B比較用とします。対応型とハードウェア別の代替動作は
+[CTranslate2の計算型の説明](https://opennmt.net/CTranslate2/quantization.html)を参照してください。
+
+#### 分割と後工程の品質
+
+現実装は文の切れ目を探す方式ではなく、固定時間で重なりなしに音声を分割します。
+これは[Whisper内部の約30秒の処理窓](https://github.com/openai/whisper#python-usage)とは
+別のものです。ローカルadapterではVAD（発話区間検出、最小無音500 ms）を有効にし、
+`temperature=0`、`condition_on_previous_text=False`で動作します。そのため、外側の
+chunkを長くしても、会議全体を1つの文脈として認識するようにはなりません。前の認識文を
+引き継ぐ機能を有効にするには別途コード変更が必要です。一貫性と反復誤りのトレードオフは
+[faster-whisperのAPI](https://github.com/SYSTRAN/faster-whisper/blob/master/faster_whisper/transcribe.py)
+を参照してください。
+
+758.8秒のベンチマーク音声では、`large-v3`、beam 5、float16、CUDA、日本語を揃え、
+`600`（外部分割2個）と`900`（1個）を追加比較しました。job記録上はいずれも41秒で、
+09:40.92までの最初の214 segmentは同一でした。一方、1 chunkの結果では末尾に、`600`には
+ない不自然な名前風文字列が加わりました。この音声では`900`による品質向上を確認できないため、
+開始値は`600`のままとします。ただし`600`はapplication 0.7.0、`900`は0.7.1で、正解
+transcriptもないため、`600`が常に優れることを証明する比較ではありません。別の値を試すときは
+application／model versionを揃え、境界だけでなく録音全体を原音で確認します。`0`で分割を
+無効にする指定は未対応です。
+
+原音とraw文字起こしは変更せずに保管します。contextやglossaryを使った補正は専門用語の
+改善に役立ちますが、流暢な文章にも誤った追加や欠落が隠れます。補正結果は原音の時刻と
+変更履歴を持つ別成果物にし、人名・数値・日時・否定・発言者を意思決定に使う前に原音で
+確認します。ローカルASRは話者分離をしないため、本文中の名前風の接頭辞を確認済みの
+話者ラベルとして扱わないでください。後工程のAIにも元データの取扱規則を適用します。
+
+### Windows GPU runtime（`device: cuda`）
+
+CPU profileではCUDA、cuBLAS、cuDNNは不要です。Windowsで`device: cuda`を指定した
+profileは、CTranslate2経由で`faster-whisper`を実行し、次のNVIDIA runtime DLL群を
+必要とします。
+
+| 文字起こし前に検査するDLL                                                                    | 提供元                    |
+| -------------------------------------------------------------------------------------------- | ------------------------- |
+| `cublas64_12.dll`、`cublasLt64_12.dll`                                                   | CUDA Toolkit 12（cuBLAS） |
+| `cudnn_ops64_9.dll`、`cudnn_cnn64_9.dll`、`cudnn_adv64_9.dll`、`cudnn_graph64_9.dll` | CUDA 12用cuDNN 9          |
+
+DLLを手作業でcopyせず、NVIDIAのGUI installerを使用します。cuBLASを含む
+[CUDA Toolkit 12](https://developer.nvidia.com/cuda-toolkit-archive)を導入した後、
+[cuDNN Downloads](https://developer.nvidia.com/cudnn-downloads)からWindows x86-64の
+CUDA 12向けFULL packageを導入します。対応するinstallerについては、NVIDIAの
+[cuDNN Windows導入手順](https://docs.nvidia.com/deeplearning/cudnn/installation/latest/windows.html)
+も参照してください。
+
+DLLを含む2つのdirectoryを`PATH`に登録する必要があります。たとえばinstallerの
+versionがCUDA 12.9、cuDNN 9.24の場合は、次のようなpathです。
+
+```text
+C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\bin
+C:\Program Files\NVIDIA\CUDNN\v9.24\bin\12.9\x64
+```
+
+実際に導入されたversionのpathを使用し、versionまたは導入先を変更したときは`PATH`も
+更新します。`PATH`編集後は新しいTerminalを開き、次のcommandで確認します。
+
+```powershell
+where.exe cublas64_12.dll
+where.exe cudnn_ops64_9.dll
+```
+
+実際のCUDA文字起こしでは、表の全DLLが`PATH`上に存在し、読み込めることを事前に
+検査します。この検査はsource hash、modelの解決・download、media処理より前に
+実行されます。DLLがない、または読み込めない場合は、対処方法を含む想定内errorとして
+終了code `2`を返します。CLIがruntimeをinstallしたり、`PATH`を変更したりすることは
+ありません。`--dry-run`ではGPU runtimeを読み込みません。
 
 初回文字起こし時に既知のモデルがなければ、Hugging Faceから自動ダウンロードします。
 組み込みモデルは公開されているため、Hugging Faceのアカウント、ログイン、利用申請・
@@ -427,12 +500,12 @@ meeting__local__local-small_transcript.manifest.json
 別profileで文字起こししても既存fileを置換しません。旧versionで作成したprofile名なしの
 出力fileは移動・上書きせず、そのまま残します。
 
-| file | 内容・用途 |
-| --- | --- |
-| `*_transcript.md` | 人が読むための主成果物です。YAML Frontmatterに元メディア、選択profile、model、engine、言語、話者分離の有無、chunk秒数、transcriber名、transcriber versionを記録し、本文にtimestamp付きの文字起こしを格納します。内容確認、レビュー、後続の要約では、まずこのfileを使用します。 |
-| `*_transcript.srt` | media playerやvideo editorで利用する字幕fileです。Azureのcueは返却された場合だけ話者labelを含み、local出力は従来どおりです。 |
-| `*_transcript.jsonl` | 1行1 JSON objectのsegment dataです。Azure segmentは任意の`speaker`を追加し、local recordは従来fieldを維持します。 |
-| `*_transcript.manifest.json` | schema 3のprovenance・検証記録です。選択profile、provider、API version、region、locale、話者分離、Entra方式、source hash、decode時間、試行・retry回数、tool version、output hashを格納し、tokenやAuthorization headerは保存しません。 |
+| file                           | 内容・用途                                                                                                                                                                                                                                                                     |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `*_transcript.md`            | 人が読むための主成果物です。YAML Frontmatterに元メディア、選択profile、model、engine、言語、話者分離の有無、chunk秒数、transcriber名、transcriber versionを記録し、本文にtimestamp付きの文字起こしを格納します。内容確認、レビュー、後続の要約では、まずこのfileを使用します。 |
+| `*_transcript.srt`           | media playerやvideo editorで利用する字幕fileです。Azureのcueは返却された場合だけ話者labelを含み、local出力は従来どおりです。                                                                                                                                                   |
+| `*_transcript.jsonl`         | 1行1 JSON objectのsegment dataです。Azure segmentは任意の`speaker`を追加し、local recordは従来fieldを維持します。                                                                                                                                                            |
+| `*_transcript.manifest.json` | schema 3のprovenance・検証記録です。選択profile、provider、API version、region、locale、話者分離、Entra方式、source hash、decode時間、試行・retry回数、tool version、output hashを格納し、tokenやAuthorization headerは保存しません。                                          |
 
 application管理のruntime dataは役割ごとに分離します。
 
@@ -515,6 +588,74 @@ Schedulerまたはcronから同じ`transcribe`コマンドを実行できます�
 - provenanceのためmanifestへ元メディアpathとhashを記録する。pathが機微な場合は
   manifestをlocal operational metadataとして扱う
 
+## CPU/GPU参考ベンチマーク
+
+### デスクトップCPUとCUDAの比較（2026-09-05評価）
+
+758.8秒（12:38.8）の日本語会話FLACを、Intel Core i9-13900K（物理24コア／論理32
+プロセッサ）、約64 GB RAM、NVIDIA GeForce RTX 4070 Ti（VRAM 12 GB）のPCで
+文字起こししました。CPUとGPUの実行がいずれもこのPCによるものと実行者が確認済みです。
+すべて`language: ja`、`chunk_seconds: 600`（外部分割2個）です。
+
+| profile                                      | model        | beam | compute     | device   | job記録上の時間 | segment数 |
+| -------------------------------------------- | ------------ | ---: | ----------- | -------- | --------------: | --------: |
+| `local/gpu-quality`                        | `large-v3` |    5 | `float16` | `cuda` |            41秒 |       271 |
+| `local/cpu-large-b1`                       | `large-v3` |    1 | `int8`    | `cpu`  |         3分41秒 |       276 |
+| `local/cpu-large-b3`                       | `large-v3` |    3 | `int8`    | `cpu`  |         4分46秒 |       274 |
+| `local/cpu-large-b5`                       | `large-v3` |    5 | `int8`    | `cpu`  |         5分30秒 |       271 |
+| `local/cpu-large-b3c32`                    | `large-v3` |    3 | `float32` | `cpu`  |        11分25秒 |       278 |
+| `local/cpu-small-b3`                       | `small`    |    3 | `int8`    | `cpu`  |            56秒 |       186 |
+| `local/cpu-small-b5`                       | `small`    |    5 | `int8`    | `cpu`  |         1分28秒 |       170 |
+| `local/cpu-fallback`（旧結果、2026-09-04） | `small`    |    1 | `int8`    | `cpu`  |         1分00秒 |       167 |
+
+別途、`local/cpu-quality`（beam 3、5分02秒）と`local/cpu-quality-b5`（beam 5、5分40秒）の
+JSONLは、それぞれ`cpu-large-b3`と`cpu-large-b5`にbyte単位で一致しました。10組の成果物に
+含まれる異なるJSONLは8種類です。これらのCPU名は測定用の独自profileで、同梱profileの
+追加を意味しません。`gpu-fast`は未測定です。
+
+manifestの元音声SHA-256と長さは一致しています。MD/SRT/JSONLの全30ファイルで記録済み
+hash・sizeが一致し、segment数と時刻範囲の検証も通りました。各jobログは開始1回、失敗0回、
+checkpoint 2回です。時間は`job.started_at`から`manifest.completed_at`までで、commandの
+起動から終了までではありません。job開始前の音声hash計算とmodel解決／downloadは除きます。
+applicationはGPUが0.7.0、旧smallが0.6.0、その他が0.7.1です。実行ごとのライブラリ／model
+revision、最大RAM/VRAM、CPU使用率、背景負荷、温度は記録されていません。
+
+原音で検証した正解transcriptなしの本文比較では、次のように評価しました。
+
+- 後工程の根拠には`small`より`large-v3`を第一候補にします。今回のGPU profileは速さと
+  不自然な文字列の少なさから優先できますが、専門用語などの確認は残ります。
+- beamを増やしても一様には改善しません。CPU beam 1にはない名前風の接頭辞がbeam 3/5に
+  現れ、beam 5ではbeam 1に残る短い応答の一部が欠けています。CPU beam 3には不自然な
+  終了定型句もありました。
+- CPU float32は一部の語句が改善したように見える一方、名前風の接頭辞は残り、同じbeam 3の
+  int8に対して約**2.40倍**の時間でした。全体的な認識精度の向上を示す結果ではありません。
+- CPU int8 beam 5はbeam 3より約**15%**、beam 1より約**49%**長くかかりました。
+  GPU float16 beam 5はCPU int8 beam 5の約8分の1の時間ですが、この比較ではdevice、
+  compute type、application versionが異なります。
+
+精度scoreや、CPUでの品質最良設定を確定するものではありません。非公開音声1本・単回実行・
+segment数では一般的な最適値は決められません。旧smallの時間もbeamだけを変えた統制比較
+ではありません。採用前に、代表的な音声と実際に使うPCで確認してください。
+
+### CUDAなしノートPC：過去の参考値（2026-09-04）
+
+以前のREADMEの測定を保持したもので、今回のデスクトップ評価では再測定していません。
+Dell Latitude 7340、Core i7-1365U（物理10コア／論理12プロセッサ）、31.6 GB RAM、
+CUDA GPUなし。同じ長さの日本語FLACでapplication 0.7.0、`int8`、`ja`、
+`chunk_seconds: 600`を使用しました。
+
+| 測定時のprofile               | model        | beam |                          経過時間 | segment数 |
+| ----------------------------- | ------------ | ---: | --------------------------------: | --------: |
+| `local-small`               | `small`    |    1 |                           3分24秒 |       167 |
+| `local-large`               | `large-v3` |    1 | 約17分43秒[^cpu-benchmark-resume] |       270 |
+| `local-quality`（独自設定） | `large-v3` |    3 |                          34分26秒 |       267 |
+
+当時の定性評価は、正解transcriptなしで、`small`から`large-v3`への改善が大きく、beam 1から
+3への改善はわずかというものでした。beam 3が常に優れるという意味ではありません。このPCの
+beam 5・float32は未測定なので、デスクトップの速度比から時間を直接推定しないでください。
+普段使いには`large-v3`／int8／beam 1から始め、待ち時間を許容できる場合にbeamを増やして
+比較するのが妥当です。
+
 ## 開発と検証
 
 ```console
@@ -527,3 +668,7 @@ uv build
 
 testは合成fileと偽のcredential、HTTP client、音声認識、ffmpeg adapterを使用します。
 Azure APIやmodel downloadを呼び出さず、実音声も更新しません。
+
+[^cpu-benchmark-resume]: 約17分43秒は、validation failureまで進んだ最初の17分16秒と、
+       timestamp validation修正後の再開27秒を合計した概算の稼働時間です。単一の
+       clean runによる測定ではありません。

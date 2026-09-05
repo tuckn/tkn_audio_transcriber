@@ -36,6 +36,7 @@ from .config import (
 )
 from .errors import CloudUploadApprovalError, ValidationError
 from .ffmpeg_adapter import FfmpegAdapter
+from .gpu_runtime import validate_cuda_runtime
 from .io_utils import (
     append_jsonl,
     atomic_write_json,
@@ -369,6 +370,14 @@ class TranscriptionPipeline:
                 "folders.output is required. Set it in config or pass --output-dir."
             )
         assert state_dir is not None
+
+        if (
+            not dry_run
+            and isinstance(transcription, LocalTranscriptionConfig)
+            and transcription.device.casefold() == "cuda"
+        ):
+            validate_cuda_runtime(transcription.device)
+            self.logger.info("CUDA GPU runtime preflight passed")
 
         source_stat = source_path.stat()
         self.logger.info("Hashing source media: %s", source_path)

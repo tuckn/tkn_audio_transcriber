@@ -47,6 +47,8 @@ That final downstream stage is not part of the base CLI.
 - [`uv`](https://docs.astral.sh/uv/)
 - `ffmpeg` available on `PATH`, or an absolute `processing.ffmpeg.executable` in config
 - Enough disk space for a mono 16 kHz WAV, plus split chunks for the local provider
+- For `device: cuda` on Windows: an NVIDIA driver, CUDA Toolkit 12 with cuBLAS,
+  cuDNN 9 for CUDA 12, and both DLL directories available on `PATH`
 - For Azure: an Entra identity with the Speech User role and network access to the
   configured Speech endpoint
 
@@ -54,34 +56,10 @@ There is no extension allowlist. Any local audio or video file that `ffmpeg` can
 and that contains at least one audio stream is accepted. This includes common inputs
 such as `.wav`, `.flac`, `.mp3`, `.m4a`, and `.mp4`.
 
-CPU use with the `small` model is the recommended first run. `medium` generally
-improves recognition at the cost of more memory and processing time.
-
-### Reference CPU benchmark
-
-Measured on 2026-09-04 with tkn-audio-transcriber 0.7.0 and faster-whisper,
-using a 758.8-second (12:38.8) Japanese conversational FLAC. All runs used CPU,
-`compute_type: int8`, `language: ja`, and `chunk_seconds: 600` on a Dell
-Latitude 7340 with an Intel Core i7-1365U (10 physical cores / 12 logical
-processors), 31.6 GB RAM, and no CUDA GPU.
-
-| Profile | Model | `beam_size` | Elapsed | Segments | Indicative quality |
-| --- | --- | ---: | ---: | ---: | --- |
-| `local-small` | `small` | 1 | 3m24s | 167 | Lower accuracy; suitable for quick review and search |
-| `local-large` | `large-v3` | 1 | ~17m43s[^cpu-benchmark-resume] | 270 | Practical accuracy |
-| `local-quality` (custom) | `large-v3` | 3 | 34m26s | 267 | Best of these runs, but only slightly better than beam 1 |
-
-`local-quality` was a custom test profile, not a packaged profile. Quality was
-judged by manual listening without a ground-truth transcript, so these
-assessments are indicative rather than reproducible accuracy scores. Machine
-load, thermals, model cache state, audio, and application/model versions affect
-timings. In this comparison, moving from `small` to `large-v3` produced the
-major quality gain; increasing the beam from 1 to 3 roughly doubled elapsed
-time for only a modest additional gain.
-
-[^cpu-benchmark-resume]: Approximate cumulative active time: a 17m16s initial
-    run reached a validation failure, followed by a 27s resume after the
-    timestamp-validation fix. This was not a clean single-run benchmark.
+Use CPU with `small` for a lightweight installation check. For transcripts used
+as downstream evidence, start with `large-v3` when resources permit. See
+[local settings](#local-profile-settings) and the
+[CPU/GPU benchmarks](#reference-cpugpu-benchmarks) for the trade-offs.
 
 ## Install
 
@@ -102,9 +80,6 @@ uv tool install . --reinstall
 
 ## Initial configuration
 
-Create the user configuration from the example bundled with the application, then
-edit it:
-
 ```console
 tkn-audio-transcriber config init
 ```
@@ -123,7 +98,7 @@ Configuration can be loaded from these locations:
 - user setting: `~/.tkn/audio_transcriber/config.yaml`
 - working-directory override: `./.tkn/config.yaml`
 
-The real `./.tkn/config.yaml` is ignored by Git. Transcript outputs default to
+Transcript outputs default to
 the current working directory. The equivalent explicit setting is:
 
 ```yaml
@@ -154,6 +129,112 @@ transcription:
 tkn-audio-transcriber config profiles
 tkn-audio-transcriber --profile local/gpu-quality transcribe "C:\path\to\meeting.flac"
 ```
+
+### Local profile settings
+
+These keys belong under `transcription.modes.local.profiles.<name>`. They apply
+to local `faster-whisper`, not Azure Speech. The examples below are starting
+points, not a guarantee of maximum accuracy.
+
+| Key               | Meaning and practical effect                                                                                                                                                                                                                                                                |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `model`         | The recognition model. Prefer multilingual`large-v3` for quality; try `medium`, then `small`, if memory or elapsed time is unacceptable. A larger model does not guarantee every word is better.                                                                                      |
+| `language`      | The expected spoken language, e.g.`ja` for Japanese. This CLI requires a non-empty string; blank/null is not an automatic-detection setting. It is not a translation target.                                                                                                              |
+| `chunk_seconds` | External audio-file splitting and checkpoint interval, in positive integer seconds. Start at`600`. Shorter chunks reduce work lost on interruption but introduce more boundaries that may cut speech.                                                                                     |
+| `beam_size`     | The number of candidate paths explored during decoding.`5` is a quality-oriented starting point; `3` or `1` can shorten processing. Larger beams do not guarantee fewer errors or hallucinations.                                                                                     |
+| `compute_type`  | Numerical precision/quantization. Start with`float16` on CUDA and `int8` on CPU. CPU `float32` is supported, but uses more resources and can be slower. This can change recognized text, not only speed; higher numerical precision is not necessarily higher transcription accuracy. |
+| `device`        | Where inference runs:`cpu` or NVIDIA `cuda`. CUDA requires the runtime below. A GPU enables faster execution of demanding settings; it does not inherently make the same model more accurate.                                                                                           |
+
+| Use case                                   | Model                   | Beam | Compute     | Device   |
+| ------------------------------------------ | ----------------------- | ---: | ----------- | -------- |
+| CUDA, quality-oriented default             | `large-v3`            |    5 | `float16` | `cuda` |
+| CPU, quality-oriented comparison candidate | `large-v3`            |    5 | `int8`    | `cpu`  |
+| CPU, everyday resource/time balance        | `large-v3`            |    1 | `int8`    | `cpu`  |
+| CPU, intermediate speed/quality experiment | `large-v3`            |    3 | `int8`    | `cpu`  |
+| CPU, lower-memory or quick preview         | `medium` or `small` |    1 | `int8`    | `cpu`  |
+
+Keep `language: ja` and `chunk_seconds: 600` for comparable Japanese tests.
+These combinations do not add or rename packaged profiles. `large-v3` is a
+reasonable starting point on a 32 GB CPU-only laptop, but sustained CPU load,
+cooling, and other applications can make waiting time or responsiveness the
+limiting factor. Reducing the beam mainly reduces decoding work and elapsed
+time; it is not a CPU-usage cap. CPU threads are not currently a profile setting.
+Use `float32` as an A/B reference when a specific error matters, not as an
+automatic upgrade. Consult [CTranslate2&#39;s compute-type documentation](https://opennmt.net/CTranslate2/quantization.html)
+for supported types and hardware-dependent fallbacks.
+
+#### Chunking and downstream quality
+
+The current implementation splits audio at fixed time boundaries without
+overlap, rather than finding sentence boundaries. This is separate from
+[Whisper&#39;s internal approximately 30-second windows](https://github.com/openai/whisper#python-usage).
+The local adapter enables VAD (speech detection; minimum silence 500 ms), uses
+`temperature=0`, and disables previous-text conditioning
+(`condition_on_previous_text=False`). Consequently, longer external chunks do
+not make the model consider the entire meeting as one context. Enabling previous
+text would be a separate code change, with a consistency-versus-repetition
+trade-off described in the [faster-whisper API](https://github.com/SYSTRAN/faster-whisper/blob/master/faster_whisper/transcribe.py).
+
+A follow-up on the 758.8-second benchmark audio compared `600` (two external
+chunks) with `900` (one chunk), using `large-v3`, beam 5, float16, CUDA, and
+Japanese. Both took 41 tracked seconds. The first 214 segments were identical
+through 09:40.92, while the one-chunk result added suspicious name-like text near
+the end that was absent with `600`. This single recording does not show a quality
+benefit from `900`, so `600` remains the recommended starting point. The comparison
+used application 0.7.0 for `600` and 0.7.1 for `900`, had no ground-truth
+transcript, and therefore does not prove that `600` is universally better.
+When testing another value, keep application/model versions fixed and review both
+the boundary and the rest of the recording against the audio. `0` is not a
+supported way to disable splitting.
+
+Keep source audio and raw transcripts unchanged. Context/glossary-assisted
+correction can improve domain terms downstream, but fluent text can also hide
+incorrect additions or omissions. Save corrections separately with source
+timestamps and an edit trail; verify names, numbers, dates, negation, and speaker
+attribution against audio before using them for decisions. Local ASR does not
+perform speaker separation: name-like prefixes in its text are not verified
+speaker labels. Downstream AI must also respect the source's data-handling policy.
+
+### Windows GPU runtime (`device: cuda`)
+
+CPU profiles do not require CUDA, cuBLAS, or cuDNN. A Windows profile with
+`device: cuda` runs `faster-whisper` through CTranslate2 and requires these NVIDIA
+runtime DLL families:
+
+| DLLs checked before transcription                                                            | Supplied by              |
+| -------------------------------------------------------------------------------------------- | ------------------------ |
+| `cublas64_12.dll`, `cublasLt64_12.dll`                                                   | CUDA Toolkit 12 (cuBLAS) |
+| `cudnn_ops64_9.dll`, `cudnn_cnn64_9.dll`, `cudnn_adv64_9.dll`, `cudnn_graph64_9.dll` | cuDNN 9 for CUDA 12      |
+
+Use NVIDIA's graphical installers rather than copying DLLs manually. Install
+[CUDA Toolkit 12](https://developer.nvidia.com/cuda-toolkit-archive), which includes
+cuBLAS, then install the Windows x86-64 FULL package from
+[cuDNN Downloads](https://developer.nvidia.com/cudnn-downloads) with CUDA 12 selected.
+See NVIDIA's [cuDNN Windows installation
+guide](https://docs.nvidia.com/deeplearning/cudnn/installation/latest/windows.html)
+for the supported installer choices.
+
+Both directories containing the DLLs must be on `PATH`. For example, installer
+versions 12.9 and 9.24 use paths like:
+
+```text
+C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\bin
+C:\Program Files\NVIDIA\CUDNN\v9.24\bin\12.9\x64
+```
+
+Use the paths created by the versions actually installed, and update `PATH` when those
+versions or locations change. Open a new terminal after editing `PATH`, then verify:
+
+```powershell
+where.exe cublas64_12.dll
+where.exe cudnn_ops64_9.dll
+```
+
+Before an actual CUDA transcription, the CLI checks that all DLLs in the table are
+present on `PATH` and loadable. The check runs before source hashing, model resolution
+or download, and media processing. A missing or unloadable DLL returns an actionable
+expected error with exit code `2`; the CLI does not install the runtime or modify
+`PATH`. A `--dry-run` does not load the GPU runtime.
 
 On the first transcription, a missing known model is downloaded automatically
 from Hugging Face. The built-in models are public, so no Hugging Face account,
@@ -452,12 +533,12 @@ The four files share one basename and form a single output set. The
 source can be transcribed with another profile without replacing these files.
 Existing profile-less output files from earlier versions are left untouched.
 
-| File | Purpose |
-| --- | --- |
-| `*_transcript.md` | Primary human-readable transcript. Its YAML Frontmatter records the source, selected profile, model, engine, language, speaker-separation status, chunk length, transcriber name, and transcriber version. The body contains timestamped transcript text. Start with this file for reading, review, or downstream summarization. |
-| `*_transcript.srt` | Standard subtitle file for media players and video editors. Azure cues include a speaker label when returned; local output is unchanged. |
-| `*_transcript.jsonl` | Machine-readable segment data with one JSON object per line. Azure segments add optional `speaker`; local records retain the existing fields. |
-| `*_transcript.manifest.json` | Schema 3 provenance and validation record. It stores the selected profile, provider, API version, region, locale, diarization, Entra method, source hash, decoded duration, attempts/retries, tool version, and output hashes. It never stores a token or Authorization header. |
+| File                           | Purpose                                                                                                                                                                                                                                                                                                                          |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `*_transcript.md`            | Primary human-readable transcript. Its YAML Frontmatter records the source, selected profile, model, engine, language, speaker-separation status, chunk length, transcriber name, and transcriber version. The body contains timestamped transcript text. Start with this file for reading, review, or downstream summarization. |
+| `*_transcript.srt`           | Standard subtitle file for media players and video editors. Azure cues include a speaker label when returned; local output is unchanged.                                                                                                                                                                                         |
+| `*_transcript.jsonl`         | Machine-readable segment data with one JSON object per line. Azure segments add optional`speaker`; local records retain the existing fields.                                                                                                                                                                                   |
+| `*_transcript.manifest.json` | Schema 3 provenance and validation record. It stores the selected profile, provider, API version, region, locale, diarization, Entra method, source hash, decoded duration, attempts/retries, tool version, and output hashes. It never stores a token or Authorization header.                                                  |
 
 Application-managed runtime data is separated by role:
 
@@ -544,6 +625,82 @@ errors, `130` for interruption, and `1` for unexpected failures.
 - The manifest records the source media path and hashes for provenance; treat it as
   local operational metadata when paths are sensitive
 
+## Reference CPU/GPU benchmarks
+
+### Desktop CPU and CUDA comparison (2026-09-05 review)
+
+A 758.8-second (12:38.8) Japanese conversational FLAC was transcribed on an
+Intel Core i9-13900K (24 physical cores / 32 logical processors), approximately
+64 GB RAM, and an NVIDIA GeForce RTX 4070 Ti (12 GB VRAM). The operator confirmed
+that the CPU and GPU runs came from this PC. All runs used `language: ja` and
+`chunk_seconds: 600` (two external chunks).
+
+| Profile                                     | Model        | Beam | Compute     | Device   | Tracked elapsed | Segments |
+| ------------------------------------------- | ------------ | ---: | ----------- | -------- | --------------: | -------: |
+| `local/gpu-quality`                       | `large-v3` |    5 | `float16` | `cuda` |             41s |      271 |
+| `local/cpu-large-b1`                      | `large-v3` |    1 | `int8`    | `cpu`  |           3m41s |      276 |
+| `local/cpu-large-b3`                      | `large-v3` |    3 | `int8`    | `cpu`  |           4m46s |      274 |
+| `local/cpu-large-b5`                      | `large-v3` |    5 | `int8`    | `cpu`  |           5m30s |      271 |
+| `local/cpu-large-b3c32`                   | `large-v3` |    3 | `float32` | `cpu`  |          11m25s |      278 |
+| `local/cpu-small-b3`                      | `small`    |    3 | `int8`    | `cpu`  |             56s |      186 |
+| `local/cpu-small-b5`                      | `small`    |    5 | `int8`    | `cpu`  |           1m28s |      170 |
+| `local/cpu-fallback` (legacy, 2026-09-04) | `small`    |    1 | `int8`    | `cpu`  |           1m00s |      167 |
+
+Two additional runs, `local/cpu-quality` (beam 3, 5m02s) and
+`local/cpu-quality-b5` (beam 5, 5m40s), produced byte-identical JSONL to
+`cpu-large-b3` and `cpu-large-b5`, respectively. The ten artifact sets therefore
+contain eight distinct JSONL results. These CPU names are custom test profiles,
+not additional packaged profiles. `gpu-fast` was not measured.
+
+The manifests record the same source SHA-256 and duration. All 30 MD/SRT/JSONL
+files matched their recorded hashes and sizes; segment counts and timestamp
+ranges also passed checks. Job logs contained one start, no failures, and two
+checkpoints per run. Elapsed time is `job.started_at` to `manifest.completed_at`,
+not command-launch-to-exit time: source hashing and model resolution/download
+before job start are excluded. GPU used application 0.7.0, the legacy small run
+0.6.0, and the other runs 0.7.1. Per-run library/model revisions, peak RAM/VRAM,
+CPU utilization, background load, and thermals were not recorded.
+
+Text review, without an audio-verified reference transcript, suggests:
+
+- `large-v3` is the stronger starting point than `small` for downstream evidence.
+  The GPU profile is the first choice in this sample for its speed and fewer
+  suspicious text artifacts, but domain terms still need review.
+- More beam search is not uniformly better. CPU beam 1 avoided name-like
+  prefixes found in beam 3 and 5; beam 5 also omitted some short responses
+  retained by beam 1. CPU beam 3 had an additional suspicious closing phrase.
+- CPU float32 changed some phrases plausibly for the better, but retained
+  suspicious name-like prefixes and took about **2.40 times** as long as int8
+  with the same beam 3. This is not evidence of a general accuracy improvement.
+- CPU int8 beam 5 took about **15% longer** than beam 3 and **49% longer** than
+  beam 1. GPU float16 beam 5 took roughly one eighth of CPU int8 beam 5's time;
+  device, compute type, and application version differ in that comparison.
+
+There is no accuracy score or proven CPU quality winner here. One private
+recording, single runs, and segment counts cannot establish a universal optimum.
+The legacy small timing is not a controlled beam-only comparison. Re-run on
+representative audio and the actual target PC before adopting a profile.
+
+### CPU-only laptop: historical reference (2026-09-04)
+
+Retained from the earlier README measurement, not re-benchmarked in the desktop
+review: Dell Latitude 7340, Core i7-1365U (10 physical cores / 12 logical
+processors), 31.6 GB RAM, no CUDA GPU. The same-duration Japanese FLAC used
+application 0.7.0, `int8`, `ja`, and `chunk_seconds: 600`.
+
+| Profile at measurement time | Model        | Beam |                        Elapsed | Segments |
+| --------------------------- | ------------ | ---: | -----------------------------: | -------: |
+| `local-small`             | `small`    |    1 |                          3m24s |      167 |
+| `local-large`             | `large-v3` |    1 | ~17m43s[^cpu-benchmark-resume] |      270 |
+| `local-quality` (custom)  | `large-v3` |    3 |                         34m26s |      267 |
+
+The earlier qualitative review reported a major gain from `small` to `large-v3`
+and only a modest gain from beam 1 to 3, without a ground-truth transcript.
+This does not establish that beam 3 is always better. CPU beam 5 and float32
+have not been measured on this laptop; do not extrapolate their times directly
+from the desktop. For everyday use, `large-v3` / int8 / beam 1 is a reasonable
+starting point, with larger beams tested when extra waiting time is acceptable.
+
 ## Development and verification
 
 ```console
@@ -556,3 +713,7 @@ uv build
 
 Tests use synthetic files and fake credentials, HTTP clients, speech-recognition, and
 `ffmpeg` adapters. They do not call Azure, download a model, or modify a real recording.
+
+[^cpu-benchmark-resume]: Approximate cumulative active time: a 17m16s initial
+       run reached a validation failure, followed by a 27s resume after the
+       timestamp-validation fix. This was not a clean single-run benchmark.
