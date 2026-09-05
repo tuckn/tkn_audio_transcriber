@@ -77,16 +77,20 @@ def validate_chunk_coverage(normalized: WavInfo, chunks: list[Path]) -> float:
     return chunk_duration
 
 
-def validate_azure_upload_limits(path: Path, info: WavInfo) -> None:
-    size = path.stat().st_size
+def validate_azure_audio_duration(info: WavInfo) -> None:
     if info.duration_seconds >= AZURE_MAX_DURATION_SECONDS:
         raise ValidationError(
             "Azure Speech normalized audio must be shorter than 2 hours: "
             f"decoded={info.duration_seconds:.3f}s"
         )
+
+
+def validate_azure_upload_limits(path: Path, info: WavInfo) -> None:
+    validate_azure_audio_duration(info)
+    size = path.stat().st_size
     if size >= AZURE_MAX_FILE_BYTES:
         raise ValidationError(
-            "Azure Speech normalized audio must be smaller than 250 MB: "
+            "Azure Speech FLAC upload must be smaller than 250 MB: "
             f"size={size} bytes"
         )
 
@@ -116,5 +120,5 @@ def estimated_initial_scratch_bytes(source_size: int) -> int:
     return max(MINIMUM_PREFLIGHT_BYTES, source_size * 4)
 
 
-def required_chunk_space_bytes(normalized_size: int) -> int:
+def required_derived_audio_space_bytes(normalized_size: int) -> int:
     return normalized_size + POST_NORMALIZE_MARGIN_BYTES

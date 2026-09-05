@@ -17,7 +17,12 @@ from audio_transcriber.config import (
     ResolvedConfig,
     resolve_config,
 )
-from audio_transcriber.errors import AzureSpeechError, CloudUploadApprovalError, ValidationError
+from audio_transcriber.errors import (
+    AzureSpeechError,
+    CloudUploadApprovalError,
+    ExternalProcessError,
+    ValidationError,
+)
 from audio_transcriber.io_utils import sha256_file
 from audio_transcriber.models import Segment
 from audio_transcriber.pipeline import TranscriptionPipeline
@@ -43,6 +48,11 @@ class FakeFfmpeg:
         for chunk in chunks:
             _write_wav(chunk, seconds=10)
         return chunks
+
+    def encode_flac(self, normalized: Path, destination: Path) -> None:
+        self.calls.append("encode-flac")
+        assert normalized.read_bytes().startswith(b"RIFF")
+        destination.write_bytes(b"fLaC" + b"synthetic compressed audio")
 
 
 def _write_wav(path: Path, *, seconds: int) -> None:
@@ -117,8 +127,10 @@ class FakeAzureRecognizer:
     def __init__(self, calls: list[str]) -> None:
         self.calls = calls
 
-    def transcribe(self, normalized_audio: Path) -> AzureTranscription:
-        self.calls.append(normalized_audio.name)
+    def transcribe(self, upload_audio: Path) -> AzureTranscription:
+        assert upload_audio.suffix == ".flac"
+        assert upload_audio.read_bytes().startswith(b"fLaC")
+        self.calls.append(upload_audio.name)
         return AzureTranscription(
             segments=[
                 Segment(
@@ -499,6 +511,7 @@ def test_azure_dry_run_never_creates_clients_or_writes(tmp_path: Path) -> None:
         "api_version": "2025-10-15",
         "locale": "ja-JP",
         "diarization_enabled": True,
+        "upload_format": "flac",
         "cloud_upload_approval_required": True,
         "cloud_upload_approved": False,
         "network_calls": 0,
@@ -506,6 +519,7 @@ def test_azure_dry_run_never_creates_clients_or_writes(tmp_path: Path) -> None:
             "status": "deferred_until_actual_run",
             "duration_must_be_less_than_seconds": 7200,
             "size_must_be_less_than_bytes": 250_000_000,
+            "size_applies_to": "flac_upload",
         },
     }
     assert ffmpeg_calls == []
@@ -570,8 +584,8 @@ def test_azure_whole_file_flow_preserves_speakers_and_provenance(
     )
 
     assert result.status == "created"
-    assert ffmpeg_calls == ["ensure", "normalize"]
-    assert azure_calls == ["normalized_16k_mono.wav"]
+    assert ffmpeg_calls == ["ensure", "normalize", "encode-flac"]
+    assert azure_calls == ["normalized_16k_mono.flac"]
     markdown = result.outputs.markdown.read_text(encoding="utf-8")
     assert 'engine: "azure-speech-fast"' in markdown
     assert "[Speaker 1] Azure text" in markdown
@@ -599,8 +613,12 @@ def test_azure_whole_file_flow_preserves_speakers_and_provenance(
     }
     assert manifest["model"] == {"requested": None, "resolved_path": None}
     assert manifest["settings"]["endpoint_type"] == "azure-custom-subdomain"
+    assert manifest["settings"]["upload_format"] == "flac"
     job = json.loads(next((tmp_path / "state" / "jobs").glob("*/job.json")).read_text())
     assert job["settings"]["azure_speech_endpoint"] == "azure-custom-subdomain"
+    assert job["settings"]["upload_format"] == "flac"
+    assert not list((tmp_path / "state" / "jobs").glob("*/*.flac"))
+    assert not list((tmp_path / "state" / "jobs").glob("*/*.wav"))
 
 
 def test_azure_duration_limit_is_checked_before_client_creation(
@@ -644,6 +662,7 @@ def test_azure_duration_limit_is_checked_before_client_creation(
     assert factory_calls == []
     normalized = next((tmp_path / "state" / "jobs").glob("*/normalized_16k_mono.wav"))
     assert normalized.is_file()
+    assert not normalized.with_suffix(".flac").exists()
 
 
 def test_azure_size_limit_is_checked_before_client_creation(tmp_path: Path) -> None:
@@ -652,8 +671,8 @@ def test_azure_size_limit_is_checked_before_client_creation(tmp_path: Path) -> N
     factory_calls: list[str] = []
 
     class OversizeFfmpeg(FakeFfmpeg):
-        def normalize(self, source: Path, destination: Path) -> None:
-            super().normalize(source, destination)
+        def encode_flac(self, normalized: Path, destination: Path) -> None:
+            super().encode_flac(normalized, destination)
             with destination.open("r+b") as stream:
                 stream.seek(250_000_000 - 1)
                 stream.write(b"\0")
@@ -680,6 +699,101 @@ def test_azure_size_limit_is_checked_before_client_creation(tmp_path: Path) -> N
         )
 
     assert factory_calls == []
+
+
+def test_azure_size_limit_applies_to_flac_and_keep_working_files_preserves_both(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "meeting.mp4"
+    source.write_bytes(b"source")
+    config = make_azure_config(tmp_path)
+    config.values["keep_working_files"] = True
+    monkeypatch.setattr("audio_transcriber.audio_integrity.AZURE_MAX_FILE_BYTES", 100)
+    result = TranscriptionPipeline(
+        config=config,
+        logger=make_logger(),
+        ffmpeg=FakeFfmpeg([]),  # type: ignore[arg-type]
+        azure_recognizer_factory=lambda config, logger: FakeAzureRecognizer([]),
+    ).transcribe(source, dry_run=False, overwrite=False, allow_cloud_upload=True)
+
+    assert result.status == "created"
+    normalized = next((tmp_path / "state" / "jobs").glob("*/*.wav"))
+    compressed = normalized.with_suffix(".flac")
+    assert normalized.stat().st_size > 100
+    assert 0 < compressed.stat().st_size < 100
+
+
+def test_azure_encoding_failure_stops_before_clients_and_partial_flac_is_regenerated(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "meeting.mp4"
+    source.write_bytes(b"source")
+    factory_calls: list[str] = []
+
+    class InterruptedFfmpeg(FakeFfmpeg):
+        def encode_flac(self, normalized: Path, destination: Path) -> None:
+            destination.write_bytes(b"partial FLAC")
+            raise ExternalProcessError("interrupted FLAC encoding")
+
+    def azure_factory(
+        config: AzureSpeechTranscriptionConfig, logger: logging.Logger
+    ) -> FakeAzureRecognizer:
+        factory_calls.append("created")
+        return FakeAzureRecognizer([])
+
+    config = make_azure_config(tmp_path)
+    with pytest.raises(ExternalProcessError, match="interrupted FLAC"):
+        TranscriptionPipeline(
+            config=config,
+            logger=make_logger(),
+            ffmpeg=InterruptedFfmpeg([]),  # type: ignore[arg-type]
+            azure_recognizer_factory=azure_factory,
+        ).transcribe(source, dry_run=False, overwrite=False, allow_cloud_upload=True)
+
+    assert factory_calls == []
+    compressed = next((tmp_path / "state" / "jobs").glob("*/*.flac"))
+    assert compressed.read_bytes() == b"partial FLAC"
+    ffmpeg_calls: list[str] = []
+    result = TranscriptionPipeline(
+        config=config,
+        logger=make_logger(),
+        ffmpeg=FakeFfmpeg(ffmpeg_calls),  # type: ignore[arg-type]
+        azure_recognizer_factory=azure_factory,
+    ).transcribe(source, dry_run=False, overwrite=False, allow_cloud_upload=True)
+
+    assert result.status == "created"
+    assert ffmpeg_calls == ["ensure", "encode-flac"]
+    assert factory_calls == ["created"]
+
+
+def test_azure_completed_checkpoint_skips_flac_encoding_and_resubmission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "meeting.mp4"
+    source.write_bytes(b"source")
+    ffmpeg_calls: list[str] = []
+    azure_calls: list[str] = []
+    pipeline = TranscriptionPipeline(
+        config=make_azure_config(tmp_path),
+        logger=make_logger(),
+        ffmpeg=FakeFfmpeg(ffmpeg_calls),  # type: ignore[arg-type]
+        azure_recognizer_factory=lambda config, logger: FakeAzureRecognizer(azure_calls),
+    )
+
+    def interrupted_render(*args: object, **kwargs: object) -> str:
+        raise RuntimeError("interrupted after Azure response")
+
+    with monkeypatch.context() as patch:
+        patch.setattr("audio_transcriber.pipeline._render_markdown", interrupted_render)
+        with pytest.raises(RuntimeError, match="interrupted after Azure"):
+            pipeline.transcribe(source, dry_run=False, overwrite=False, allow_cloud_upload=True)
+
+    result = pipeline.transcribe(
+        source, dry_run=False, overwrite=False, allow_cloud_upload=True
+    )
+    assert result.status == "created"
+    assert ffmpeg_calls.count("encode-flac") == 1
+    assert azure_calls == ["normalized_16k_mono.flac"]
 
 
 def test_provider_changes_fingerprint(tmp_path: Path) -> None:

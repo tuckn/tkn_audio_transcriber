@@ -201,7 +201,7 @@ class AzureSpeechFastAdapter:
         self.sleep = sleep
         self.jitter = jitter
 
-    def transcribe(self, normalized_audio: Path) -> AzureTranscription:
+    def transcribe(self, upload_audio: Path) -> AzureTranscription:
         endpoint = self.config.endpoint.rstrip("/")
         api_version = self.config.api_version
         locale = self.config.locale
@@ -241,11 +241,11 @@ class AzureSpeechFastAdapter:
             total_attempts = max_retries + 1
             for attempt in range(1, total_attempts + 1):
                 self.logger.info(
-                    "Submitting normalized audio to Azure Speech: attempt %d/%d",
+                    "Submitting FLAC audio to Azure Speech: attempt %d/%d",
                     attempt,
                     total_attempts,
                 )
-                with normalized_audio.open("rb") as audio_stream:
+                with upload_audio.open("rb") as audio_stream:
                     try:
                         response = client.post(
                             url,
@@ -254,9 +254,9 @@ class AzureSpeechFastAdapter:
                             data={"definition": json.dumps(definition, separators=(",", ":"))},
                             files={
                                 "audio": (
-                                    "normalized_16k_mono.wav",
+                                    "normalized_16k_mono.flac",
                                     audio_stream,
-                                    "audio/wav",
+                                    "audio/flac",
                                 )
                             },
                         )
@@ -268,7 +268,7 @@ class AzureSpeechFastAdapter:
                         )
                         definitely_incomplete = (
                             isinstance(exc, (httpx.WriteError, httpx.WriteTimeout))
-                            and audio_position < normalized_audio.stat().st_size
+                            and audio_position < upload_audio.stat().st_size
                         )
                         if definitely_pre_upload or definitely_incomplete:
                             if attempt >= total_attempts:

@@ -67,6 +67,31 @@ class FfmpegAdapter:
         if not destination.is_file() or destination.stat().st_size == 0:
             raise ExternalProcessError("ffmpeg did not create a normalized audio file")
 
+    def encode_flac(self, normalized: Path, destination: Path) -> None:
+        """Losslessly encode the validated PCM WAV for cloud upload."""
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        self._run(
+            [
+                "-y",
+                "-i",
+                str(normalized),
+                "-map",
+                "0:a:0",
+                "-map_metadata",
+                "-1",
+                "-c:a",
+                "flac",
+                "-sample_fmt",
+                "s16",
+                "-vn",
+                "-f",
+                "flac",
+                str(destination),
+            ]
+        )
+        if not destination.is_file() or destination.stat().st_size == 0:
+            raise ExternalProcessError("ffmpeg did not create a FLAC upload file")
+
     def split(self, normalized: Path, chunk_dir: Path, chunk_seconds: int) -> list[Path]:
         chunk_dir.mkdir(parents=True, exist_ok=True)
         self._run(

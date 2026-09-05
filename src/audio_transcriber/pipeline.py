@@ -20,7 +20,8 @@ from .audio_integrity import (
     ensure_free_space,
     estimated_initial_scratch_bytes,
     inspect_normalized_wav,
-    required_chunk_space_bytes,
+    required_derived_audio_space_bytes,
+    validate_azure_audio_duration,
     validate_azure_upload_limits,
     validate_chunk_coverage,
 )
@@ -56,7 +57,7 @@ RecognizerFactory = Callable[[Path, LocalTranscriptionConfig], SpeechRecognizer]
 
 
 class AzureRecognizer(Protocol):
-    def transcribe(self, normalized_audio: Path) -> AzureTranscription: ...
+    def transcribe(self, upload_audio: Path) -> AzureTranscription: ...
 
 
 AzureRecognizerFactory = Callable[
@@ -102,6 +103,7 @@ def _fingerprint_settings(config: ResolvedConfig) -> dict[str, object]:
         "azure_speech_locale": transcription.locale,
         "azure_speech_diarization_enabled": transcription.diarization_enabled,
         "azure_speech_max_speakers": transcription.max_speakers,
+        "upload_format": "flac",
     }
 
 
@@ -295,6 +297,7 @@ def _dry_run_plan(config: ResolvedConfig) -> dict[str, object]:
             "api_version": transcription.api_version,
             "locale": transcription.locale,
             "diarization_enabled": transcription.diarization_enabled,
+            "upload_format": "flac",
             "cloud_upload_approval_required": True,
             "cloud_upload_approved": False,
             "network_calls": 0,
@@ -302,6 +305,7 @@ def _dry_run_plan(config: ResolvedConfig) -> dict[str, object]:
                 "status": "deferred_until_actual_run",
                 "duration_must_be_less_than_seconds": AZURE_MAX_DURATION_SECONDS,
                 "size_must_be_less_than_bytes": AZURE_MAX_FILE_BYTES,
+                "size_applies_to": "flac_upload",
             },
         }
     return {
@@ -446,6 +450,7 @@ class TranscriptionPipeline:
         job_dir = job_directory(state_dir, source_path, fingerprint)
         chunks_dir = job_dir / "chunks"
         normalized = job_dir / "normalized_16k_mono.wav"
+        cloud_audio = job_dir / "normalized_16k_mono.flac"
         checkpoint_segments = job_dir / "segments.jsonl"
         progress_path = job_dir / "progress.json"
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -489,7 +494,7 @@ class TranscriptionPipeline:
                 assert model_path is not None
                 ensure_free_space(
                     state_dir,
-                    required_chunk_space_bytes(normalized.stat().st_size),
+                    required_derived_audio_space_bytes(normalized.stat().st_size),
                     stage="chunk creation",
                 )
                 chunks = sorted(chunks_dir.glob("chunk_*.wav"))
@@ -559,7 +564,7 @@ class TranscriptionPipeline:
                     raise ValidationError("Not all chunks were processed")
                 attempts = len(chunks)
             else:
-                validate_azure_upload_limits(normalized, normalized_info)
+                validate_azure_audio_duration(normalized_info)
                 progress = read_json(progress_path) if progress_path.exists() else {}
                 completed_request = progress.get("azure_request_completed") is True
                 segments = _load_segments(checkpoint_segments) if completed_request else []
@@ -570,9 +575,26 @@ class TranscriptionPipeline:
                     request_id = raw_request_id if isinstance(raw_request_id, str) else None
                     self.logger.info("Resuming from completed Azure Speech response checkpoint")
                 else:
+                    ensure_free_space(
+                        state_dir,
+                        required_derived_audio_space_bytes(normalized.stat().st_size),
+                        stage="FLAC encoding",
+                    )
+                    tracker.set_stage("encoding-flac")
+                    self.logger.info("Losslessly encoding normalized audio to FLAC")
+                    # Always regenerate: an interrupted encoding may leave a partial file.
+                    tracker.run_with_heartbeat(
+                        partial(self.ffmpeg.encode_flac, normalized, cloud_audio)
+                    )
+                    validate_azure_upload_limits(cloud_audio, normalized_info)
+                    self.logger.info(
+                        "FLAC upload ready: wav_bytes=%d, flac_bytes=%d",
+                        normalized.stat().st_size,
+                        cloud_audio.stat().st_size,
+                    )
                     tracker.set_stage(
                         "transcribing",
-                        current_chunk=normalized.name,
+                        current_chunk=cloud_audio.name,
                         chunk_position=1,
                         chunk_count=1,
                     )
@@ -580,7 +602,7 @@ class TranscriptionPipeline:
                         transcription, self.logger
                     )
                     azure_result = tracker.run_with_heartbeat(
-                        partial(azure_recognizer.transcribe, normalized)
+                        partial(azure_recognizer.transcribe, cloud_audio)
                     )
                     segments = azure_result.segments
                     attempts = azure_result.attempts
@@ -702,6 +724,7 @@ class TranscriptionPipeline:
                     "max_speakers": transcription.max_speakers,
                     "timeout_seconds": transcription.timeout_seconds,
                     "max_retries": transcription.max_retries,
+                    "upload_format": "flac",
                 }
                 api_version = transcription.api_version
                 region = transcription.region
@@ -749,7 +772,7 @@ class TranscriptionPipeline:
             validate_artifact(outputs.manifest, verify_source=True)
 
             if not bool(self.config.values["keep_working_files"]):
-                for working_file in [normalized, *chunks]:
+                for working_file in [normalized, cloud_audio, *chunks]:
                     try:
                         working_file.unlink(missing_ok=True)
                     except OSError as exc:

@@ -21,7 +21,7 @@ SHA-256を再確認します。会議メモの要約、用語補正、汎用生�
 Transcriptionという実装を表します。
 
 ローカルproviderは、モデル取得後に音声をuploadしません。Azure providerは、commandに
-`--allow-cloud-upload`を指定したときだけ、派生したモノラル16 kHz WAVを1つuploadします。
+`--allow-cloud-upload`を指定したときだけ、可逆圧縮したモノラル16 kHz FLACを1つuploadします。
 どちらも汎用LLMへ音声や文字起こしtextを送りません。
 
 役割の境界は次のとおりです。
@@ -30,7 +30,7 @@ Transcriptionという実装を表します。
   映像フレームは使用しない
 - Pythonスクリプト: job管理、再開、heartbeat、検証、成果物作成を行う
 - `faster-whisper`: ローカル音声チャンクを文字列へ変換する
-- Azure Speech Fast Transcription: 正規化WAV全体を文字起こしし、任意で話者を識別する
+- Azure Speech Fast Transcription: FLACファイル全体を文字起こしし、任意で話者を識別する
 - 生成AIまたは人: 必要に応じて、要約、議題整理、固有名詞補正、読みやすい文章化を行う
 
 最後の工程はdownstream処理であり、このリポジトリの基本CLIには含めません。
@@ -41,7 +41,8 @@ Transcriptionという実装を表します。
 - Python 3.12以上
 - [`uv`](https://docs.astral.sh/uv/)
 - `PATH`から実行できる`ffmpeg`、または設定した`processing.ffmpeg.executable`
-- モノラル16 kHz WAVと、ローカルproviderでは分割チャンクを保存できる空き容量
+- モノラル16 kHz WAVと、ローカルproviderでは分割チャンク、Azure providerでは
+  送信用FLACを保存できる空き容量
 - Windowsで`device: cuda`を使う場合は、NVIDIA driver、cuBLASを含むCUDA Toolkit
   12、CUDA 12用cuDNN 9、および両方のDLL directoryが登録された`PATH`
 - Azureでは、Speech User roleを持つEntra identityと設定済みSpeech endpointへの接続
@@ -312,9 +313,16 @@ CLIは録音内容の機密区分を判定できません。flagを付ける前�
 
 認証には`DefaultAzureCredential`とCognitive Services token scopeを使い、subscription
 keyは受け付けません。CLIから`az login`やbrowser対話認証は行わないため、許可された
-Entra手段で事前にsign inしてください。正規化WAVは2時間未満かつ250 MB未満である必要が
-あり、credentialやHTTP clientを作る前に検証します。映像frameとlocal chunkはAzureへ
-送りません。
+Entra手段で事前にsign inしてください。
+
+CLIはローカルでモノラル16 kHz・16 bit PCM WAVを検証した後、送信用のFLACへ可逆圧縮します
+（`audio/flac`）。圧縮は正規化済みの音声サンプルを保持し、サンプリング周波数とチャンネル数は
+変更しません。追加設定は不要です。CLIの既存の長さ制限である2時間未満は維持し、250 MB未満の
+送信サイズ制限は中間WAVではなく圧縮後のFLACへ適用します。長さは圧縮前、FLACのサイズは
+credentialやHTTP clientの作成前に検証します。映像frame、中間WAV、local chunkはAzureへ
+送りません。preview、job settings、manifest settingsには`upload_format: flac`を記録します。
+圧縮に失敗した場合は認証・送信前に停止し、再実行時は不完全な可能性があるFLACを再利用せず
+再生成します。Azure応答取得済みのcheckpointがある場合は、圧縮・再送せず結果を再利用します。
 
 自動retryは429、retry可能な5xx、upload前の接続失敗、音声streamが未完了と確認できる
 transport失敗だけです。`Retry-After`を尊重し、400/401/403/413はretryしません。uploadが
@@ -391,7 +399,7 @@ tkn-audio-transcriber model download medium --model-dir "D:\models"
 
 元メディアの検証とhash計算、派生音声の正規化、選択providerでの音声認識、元メディアが
 変わっていないことの再検証、出力確定を順に行います。local modeは再開可能なchunkを作り、
-Azure modeは正規化WAV全体を1 requestで送ります。
+Azure modeは可逆圧縮したFLAC全体を1 requestで送ります。
 
 動画ファイルでは、`ffmpeg`が先頭の音声ストリーム（`0:a:0`）を選択し、映像ストリームを
 破棄します。元動画は変更せず、出力名には元動画のファイル名（拡張子を除く）を使います。
@@ -415,7 +423,7 @@ tkn-audio-transcriber transcribe "C:\path\to\town-hall.mp4" `
 - `--dry-run`: output、state、cache、reportを一切変更しない
 - `--overwrite`: 内容が異なる、または不完全な既存の最終出力だけを置換する。
   指定しない場合は停止する
-- `--keep-working-files`: 検証成功後も正規化WAVとチャンクを保持する。
+- `--keep-working-files`: 検証成功後も正規化WAV、cloud用FLAC、local用チャンクを保持する。
   監査・再開用checkpointは常に保持する
 - `--allow-cloud-upload`: この実行だけAzure uploadを承認する。設定fileからは読まない
 
@@ -436,7 +444,8 @@ GPU環境でcheckpoint間隔を長くしたい場合は`900`～`1800`程度が�
 再開性のtrade-offですが、チャンク間に音声の重複がないため、短くしすぎると境界で単語や文が
 切れて認識漏れや誤認識が増える可能性があります。
 
-開始前にscratch容量を概算し、正規化後は実際のWAV容量からチャンク作成分を再確認します。
+開始前にscratch容量を概算し、正規化後は実際のWAV容量からチャンク作成分またはcloud用FLAC
+圧縮分を再確認します。
 正規化WAVの形式が不正な場合や、再生時間と全チャンクの合計時間が一致しない場合は、
 最終outputを確定しません。local文字起こしのsegmentがdecode済みチャンクの末尾を部分的に
 越えた場合は末尾へ補正し、decode済み音声の完全に外側にあるsegmentは除外します。

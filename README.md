@@ -23,7 +23,7 @@ implementation: local `faster-whisper`, a Whisper-family ASR model, or Azure Spe
 Fast Transcription.
 
 The local provider does not upload audio after its model has been downloaded. The Azure
-provider uploads one derived mono/16 kHz WAV only after the command includes
+provider uploads one losslessly compressed mono/16 kHz FLAC only after the command includes
 `--allow-cloud-upload`. Neither provider sends audio or transcript text to a
 general-purpose LLM.
 
@@ -33,7 +33,7 @@ The boundary is:
   frames are ignored
 - Python code: manage jobs, resume, heartbeat, validation, and output artifacts
 - `faster-whisper`: convert local audio chunks into text
-- Azure Speech Fast Transcription: transcribe one complete normalized WAV and optionally
+- Azure Speech Fast Transcription: transcribe one complete FLAC file and optionally
   identify speakers
 - optional generative AI or a person: summarize, organize topics, correct domain terms,
   and polish prose downstream
@@ -47,6 +47,7 @@ That final downstream stage is not part of the base CLI.
 - [`uv`](https://docs.astral.sh/uv/)
 - `ffmpeg` available on `PATH`, or an absolute `processing.ffmpeg.executable` in config
 - Enough disk space for a mono 16 kHz WAV, plus split chunks for the local provider
+  or a FLAC upload file for the Azure provider
 - For `device: cuda` on Windows: an NVIDIA driver, CUDA Toolkit 12 with cuBLAS,
   cuDNN 9 for CUDA 12, and both DLL directories available on `PATH`
 - For Azure: an Entra identity with the Speech User role and network access to the
@@ -334,9 +335,18 @@ submitted; dry-run, hashing, and local normalization do not call the Speech API.
 
 Authentication uses `DefaultAzureCredential` and the Cognitive Services token scope.
 Subscription keys are unsupported. The CLI never runs `az login` or interactive browser
-authentication. Sign in beforehand with an approved Entra method. The normalized WAV
-must be shorter than two hours and smaller than 250 MB; both limits are checked before
-credential or HTTP client creation. Azure receives no video frames and no local chunks.
+authentication. Sign in beforehand with an approved Entra method.
+
+The CLI validates a local mono/16 kHz/16-bit PCM WAV, then losslessly encodes it to FLAC
+for upload (`audio/flac`). Compression preserves the normalized samples; the sample rate
+and channel count do not change. No extra configuration is required. The CLI retains its
+existing limit of audio shorter than two hours; the 250 MB upload limit applies to the
+encoded FLAC, not the intermediate WAV. Duration is checked before encoding, and FLAC
+size is checked before credential or HTTP client creation. Azure receives no video frames,
+intermediate WAV, or local chunks. The preview, job settings, and manifest settings report
+`upload_format: flac`. Encoding failures stop before any authentication or upload; a retry
+regenerates the FLAC rather than reusing a potentially partial file. A completed Azure
+response checkpoint is reused without encoding or submitting again.
 
 Automatic retries are limited to 429, retryable 5xx responses, pre-upload connection
 failures, and transport failures for which the audio stream is confirmed incomplete.
@@ -416,7 +426,7 @@ tkn-audio-transcriber model download medium --model-dir "D:\models"
 The command validates and hashes the source, normalizes a derived copy, recognizes
 speech with the selected provider, verifies the source is unchanged, then commits
 validated outputs. Local mode creates resumable chunks; Azure mode sends the complete
-normalized WAV in one request.
+losslessly encoded FLAC in one request.
 
 For a video file, `ffmpeg` selects the first audio stream (`0:a:0`) and discards the
 video stream. The original video remains unchanged, and output names use its file stem.
@@ -440,7 +450,7 @@ Important safety options:
 - `--dry-run`: no output, state, cache, or report changes
 - `--overwrite`: replace only existing differing or incomplete final outputs;
   without it the command stops
-- `--keep-working-files`: retain the normalized WAV and chunks after successful
+- `--keep-working-files`: retain the normalized WAV, cloud FLAC, and local chunks after successful
   verification; checkpoints are always retained for audit/resume
 - `--allow-cloud-upload`: approve an Azure upload for this invocation only; it is never
   read from configuration
@@ -466,7 +476,7 @@ overhead against resumability, but chunks do not overlap, so values that are too
 can split words or sentences at boundaries and increase omissions or recognition errors.
 
 Before processing, the CLI estimates scratch-space needs. After normalization, it
-checks the actual WAV size before creating chunks. It refuses to commit final output if
+checks the actual WAV size before creating chunks or encoding cloud FLAC. It refuses to commit final output if
 the normalized WAV format is invalid or total chunk duration differs from decoded audio.
 For local transcription, segment timestamps that partially exceed their decoded chunk
 are clipped to its boundary, while segments wholly outside decoded audio are discarded.

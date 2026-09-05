@@ -94,7 +94,9 @@ def test_success_uses_entra_multipart_and_preserves_speaker(
         assert url.endswith("/speechtotext/transcriptions:transcribe")
         assert kwargs["params"] == {"api-version": "2025-10-15"}
         assert kwargs["headers"] == {"Authorization": "Bearer CANARY_TOKEN_VALUE"}
-        assert kwargs["files"]["audio"][0] == "normalized_16k_mono.wav"
+        assert kwargs["files"]["audio"][0] == "normalized_16k_mono.flac"
+        assert kwargs["files"]["audio"][2] == "audio/flac"
+        assert kwargs["files"]["audio"][1].read() == audio_canary.encode()
         assert '"locales":["ja-JP"]' in kwargs["data"]["definition"]
         assert '"diarization":{"enabled":true,"maxSpeakers":8}' in kwargs["data"][
             "definition"

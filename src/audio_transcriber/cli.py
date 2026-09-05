@@ -134,7 +134,7 @@ def _parser() -> argparse.ArgumentParser:
         "--keep-working-files",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Keep normalized audio and chunks after successful verification.",
+        help="Keep normalized WAV, cloud FLAC, and local chunks after successful verification.",
     )
     transcribe.add_argument(
         "--azure-speech-endpoint",
@@ -166,7 +166,7 @@ def _parser() -> argparse.ArgumentParser:
         "--allow-cloud-upload",
         action="store_true",
         help=(
-            "Approve uploading the normalized audio for this run only; cannot be saved in config."
+            "Approve uploading FLAC audio for this run only; cannot be saved in config."
         ),
     )
     transcribe.add_argument(
