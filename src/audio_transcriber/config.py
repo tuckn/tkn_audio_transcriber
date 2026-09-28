@@ -18,7 +18,7 @@ APPLICATION_ID = "audio_transcriber"
 SCHEMA_VERSION = "3.0.0"
 _SCHEMA_VERSION_PARTS = (3, 0, 0)
 _SCHEMA_VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
-CONFIG_EXAMPLE_RESOURCE = "config.example.yaml"
+CONFIG_EXAMPLE_RESOURCE = "resources/config.example.yaml"
 
 LOCAL_PROVIDER = "faster-whisper"
 AZURE_PROVIDER = "azure-speech-fast"
