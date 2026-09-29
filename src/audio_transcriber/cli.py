@@ -20,6 +20,7 @@ from .job_state import list_jobs
 from .logging_config import configure_logging
 from .maintenance import cleanup_jobs
 from .model_store import download_model
+from .models import TranscriptionResult
 from .pipeline import TranscriptionPipeline
 from .validation import validate_artifact
 
@@ -189,6 +190,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Replace existing differing or incomplete outputs after successful processing.",
     )
+    transcribe.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the transcription result as machine-readable JSON instead of plain text.",
+    )
 
     validate = commands.add_parser("validate", help="Validate output hashes and manifest.")
     validate.add_argument("manifest", type=Path, help="Transcript manifest JSON.")
@@ -220,6 +226,28 @@ def _parser() -> argparse.ArgumentParser:
 
 def _json_result(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _text_result(result: TranscriptionResult) -> None:
+    print(f"status: {result.status}")
+    print(f"source: {result.source}")
+    print(f"fingerprint: {result.fingerprint}")
+    print(f"segment_count: {result.segment_count}")
+    print("outputs:")
+    for name, path in result.outputs.as_dict().items():
+        print(f"  {name}: {path}")
+    if result.plan is not None:
+        print("plan:")
+
+        def show_plan(values: dict[str, Any], indent: str) -> None:
+            for name, value in values.items():
+                if isinstance(value, dict):
+                    print(f"{indent}{name}:")
+                    show_plan(value, indent + "  ")
+                else:
+                    print(f"{indent}{name}: {value}")
+
+        show_plan(result.plan, "  ")
 
 
 def _path_value(value: Path | None) -> str | None:
@@ -342,7 +370,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 overwrite=args.overwrite,
                 allow_cloud_upload=args.allow_cloud_upload,
             )
-            _json_result(result.to_dict())
+            if args.json:
+                _json_result(result.to_dict())
+            else:
+                _text_result(result)
             return 0
         if args.command == "validate":
             _json_result(validate_artifact(args.manifest, verify_source=args.verify_source))

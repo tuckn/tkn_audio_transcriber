@@ -596,7 +596,11 @@ cacheは上記のapplication管理場所へ分離したままです。すべて�
 - `--overwrite`なしで異なる、または不完全な出力が存在: error
 - dry-run: `planned`
 
-最終結果は標準出力へJSONで出します。進捗と診断は標準エラーへ
+`transcribe`の最終結果は標準出力へ通常のpathを含むテキストで出します。
+Windowsでも`markdown:`などの行からpathをそのままコピーしてExplorerで開けます。
+機械処理用のJSONが必要な場合は`transcribe ... --json`を指定してください。
+JSONのWindows pathは仕様上`\\`でエスケープされます。
+その他のcommandの結果は従来どおりJSONです。進捗と診断は標準エラーへ
 `[LEVEL] message`形式で出します。`-q/--quiet`はerrorのみ、`-v/--verbose`は
 debugも表示します。対話terminalでANSI colorを利用できる場合は`SUCCESS`を緑、
 `ERROR`/`CRITICAL`を赤で表示します。redirect、`NO_COLOR`、`TERM=dumb`、

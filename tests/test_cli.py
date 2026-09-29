@@ -3,6 +3,7 @@ from pathlib import Path
 
 from audio_transcriber.cli import main
 from audio_transcriber.errors import ValidationError
+from audio_transcriber.models import OutputPaths, TranscriptionResult
 
 
 def test_help_and_version(capsys: object) -> None:
@@ -23,6 +24,69 @@ def test_transcribe_help_describes_audio_and_video(capsys: object) -> None:
     assert "Source audio or video file with an audio stream" in captured.out
     assert "--provider" not in captured.out
     assert "cached credentials cannot be reused" in " ".join(captured.out.split())
+    assert "--json" in captured.out
+
+
+def test_transcribe_prints_copyable_paths_by_default(
+    tmp_path: Path, monkeypatch: object, capsys: object
+) -> None:
+    source = tmp_path / "source.wav"
+    outputs = OutputPaths(
+        markdown=tmp_path / "meeting_transcript.md",
+        srt=tmp_path / "meeting_transcript.srt",
+        jsonl=tmp_path / "meeting_transcript.jsonl",
+        manifest=tmp_path / "meeting_transcript.manifest.json",
+    )
+    result = TranscriptionResult(
+        status="created",
+        source=source,
+        fingerprint="abc123",
+        outputs=outputs,
+        segment_count=402,
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "audio_transcriber.cli.TranscriptionPipeline.transcribe",
+        lambda self, audio, **kwargs: result,
+    )
+
+    assert main(["transcribe", str(source)]) == 0
+
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    assert captured.out.splitlines() == [
+        "status: created",
+        f"source: {source}",
+        "fingerprint: abc123",
+        "segment_count: 402",
+        "outputs:",
+        f"  markdown: {outputs.markdown}",
+        f"  srt: {outputs.srt}",
+        f"  jsonl: {outputs.jsonl}",
+        f"  manifest: {outputs.manifest}",
+    ]
+    assert "Unexpected failure" not in captured.err
+
+
+def test_transcribe_dry_run_prints_plan_as_text(
+    tmp_path: Path, monkeypatch: object, capsys: object
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))  # type: ignore[attr-defined]
+    monkeypatch.setenv("USERPROFILE", str(home))  # type: ignore[attr-defined]
+    monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
+    source = tmp_path / "audio.wav"
+    source.write_bytes(b"audio")
+
+    assert main(["transcribe", str(source), "--dry-run"]) == 0
+
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    assert captured.out.startswith(f"status: planned\nsource: {source}\n")
+    assert f"  markdown: {tmp_path / 'audio__local__local-small_transcript.md'}\n" in (
+        captured.out
+    )
+    assert "plan:\n  mode: local\n  profile: local/local-small\n" in captured.out
+    assert "  network_calls: 0\n" in captured.out
+    assert f"[INFO] Hashing source media: {source}" in captured.err
 
 
 def test_config_show_outputs_machine_readable_json(
@@ -143,7 +207,7 @@ def test_transcribe_dry_run_defaults_output_to_current_working_directory(
     source = tmp_path / "audio.wav"
     source.write_bytes(b"audio")
     monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
-    assert main(["transcribe", str(source), "--dry-run"]) == 0
+    assert main(["transcribe", str(source), "--dry-run", "--json"]) == 0
     captured = capsys.readouterr()  # type: ignore[attr-defined]
     payload = json.loads(captured.out)
     assert payload["status"] == "planned"
@@ -165,7 +229,7 @@ def test_profile_switches_transcription_model_for_dry_run(
 
     assert (
         main(
-            ["--profile", "local/local-large", "transcribe", str(source), "--dry-run"]
+            ["--profile", "local/local-large", "transcribe", str(source), "--dry-run", "--json"]
         )
         == 0
     )
@@ -239,6 +303,7 @@ def test_azure_profile_dry_run_does_not_require_upload_approval(
                 "transcribe",
                 str(source),
                 "--dry-run",
+                "--json",
             ]
         )
         == 0
