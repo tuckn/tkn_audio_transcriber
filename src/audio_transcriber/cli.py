@@ -70,7 +70,12 @@ def _parser() -> argparse.ArgumentParser:
     config_init.add_argument(
         "--dry-run", action="store_true", help="Print the planned action without writing."
     )
-    config_commands.add_parser("show", help="Print values and their source as JSON.")
+    config_list = config_commands.add_parser(
+        "list", help="List resolved settings and their sources as key=value lines."
+    )
+    config_list.add_argument(
+        "--json", action="store_true", help="Print the full resolved configuration as JSON."
+    )
     config_commands.add_parser(
         "profiles", help="List available transcription profiles and the active selection."
     )
@@ -228,6 +233,37 @@ def _json_result(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
+def _config_lines(value: Any, prefix: str = "") -> list[str]:
+    """Flatten resolved config while keeping paths copyable and each value on one line."""
+    if isinstance(value, dict):
+        if not value:
+            return [f"{prefix}={{}}"]
+        return [
+            line
+            for key, item in value.items()
+            for line in _config_lines(item, f"{prefix}.{key}" if prefix else key)
+        ]
+    if isinstance(value, list):
+        if not value:
+            return [f"{prefix}=[]"]
+        return [
+            line
+            for index, item in enumerate(value)
+            for line in _config_lines(item, f"{prefix}[{index}]")
+        ]
+    if isinstance(value, str):
+        escapes = {"\r": "\\r", "\n": "\\n", "\t": "\\t"}
+        display = "".join(
+            escapes.get(char, f"\\x{ord(char):02x}")
+            if ord(char) < 32 or 127 <= ord(char) < 160
+            else char
+            for char in value
+        )
+    else:
+        display = json.dumps(value, ensure_ascii=False)
+    return [f"{prefix}={display}"]
+
+
 def _text_result(result: TranscriptionResult) -> None:
     print(f"status: {result.status}")
     print(f"source: {result.source}")
@@ -302,10 +338,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                 )
                 return 0
-            if args.config_command == "show":
+            if args.config_command == "list":
                 config = _resolve(args)
                 _warn_in_memory_migrations(config, logger)
-                _json_result(config.display())
+                logger.info("Showing resolved configuration")
+                if args.json:
+                    _json_result(config.display())
+                else:
+                    print("\n".join(_config_lines(config.display())))
                 return 0
             if args.config_command == "profiles":
                 config = _resolve(args)

@@ -15,6 +15,10 @@
 
 ### Changed
 
+- `config show` を `config list` に変更し、既定表示を 1 行に 1 つの `key=value` 形式にしました。
+  従来の JSON 出力を使うスクリプトは `config list --json` に変更してください。
+  更新後は `uv tool install . --reinstall` で再インストールしてください。設定ファイルの変更は不要です。
+
 - `transcribe` の標準出力を、既定では読みやすいテキスト形式に変更しました。
   従来の JSON 出力を利用するスクリプトでは `--json` の指定が必要です。
 - README を日本語に統合し、phrase list の用途とベンチマークの評価条件を明確化しました。

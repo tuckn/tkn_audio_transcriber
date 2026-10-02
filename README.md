@@ -76,14 +76,14 @@ tkn-audio-transcriber --version
 
 ## 初期設定
 
-`config init` でユーザー設定 `~/.tkn/audio_transcriber/config.yaml` を作ります。同梱の設定では `local/local-small` が選ばれており、CPU での初回実行には編集が不要です。`config show` は適用される設定とその出典を JSON で表示します。
+`config init` でユーザー設定 `~/.tkn/audio_transcriber/config.yaml` を作ります。同梱の設定では `local/local-small` が選ばれており、CPU での初回実行には編集が不要です。`config list` は適用される設定とその出典を、1 行に 1 つの `key=value` 形式で表示します。
 
 ```powershell
 tkn-audio-transcriber config init
-tkn-audio-transcriber config show
+tkn-audio-transcriber config list
 ```
 
-新規作成した同梱設定なら、`config show` の `active_mode` は `local`、`active_profile` は `local-small` です。出力先は `values.output_dir.value` に作業ディレクトリの絶対パスとして表示されます。既存の編集済み設定は `config init` だけでは上書きされないため、値が異なる場合は表示された設定を確認してください。
+新規作成した同梱設定なら、`config list` の `active_mode` は `local`、`active_profile` は `local-small` です。出力先は `values.output_dir.value` に作業ディレクトリの絶対パスとして表示されます。既存の編集済み設定は `config init` だけでは上書きされないため、値が異なる場合は表示された設定を確認してください。
 
 作業フォルダごとに変更したい場合は、次のコマンドで `./.tkn/config.yaml` を作れます。既存設定を編集するときは他の項目を残してください。
 
@@ -143,7 +143,7 @@ tkn-audio-transcriber status
 | 目的 | コマンド | 説明 |
 | --- | --- | --- |
 | 設定を作る | [`config init`](#config-init) | 同梱例から設定を作る。既存の編集済み設定は保護する |
-| 設定を確認する | [`config show`](#config-show)、[`config profiles`](#config-profiles) | 有効値・出典、利用可能なプロファイルを表示する |
+| 設定を確認する | [`config list`](#config-list)、[`config profiles`](#config-profiles) | 有効値・出典、利用可能なプロファイルを表示する |
 | 旧設定を移す | [`config migrate`](#config-migrate) | 旧スキーマを検証し、バックアップ後に更新する |
 | モデルを事前取得する | [`model download`](#model-download) | ローカル認識モデルをダウンロードする |
 | 文字起こしを作る | [`transcribe`](#transcribe) | 音声・動画から 4 種類の成果物を作る |
@@ -192,15 +192,21 @@ tkn-audio-transcriber config init --dry-run
 tkn-audio-transcriber config init
 ```
 
-### `config show`
+### `config list`
 
-解決後の非secret設定、各値のsource、各設定sourceのschema version、effective schema version、in-memory migrationの有無をJSONで表示します。
-読み取り専用であり、ディレクトリを作成しません。
+解決後の非secret設定、各値のsource、選択中・利用可能なprofile、各設定sourceのschema version、effective schema version、in-memory migrationの有無を表示します。
+既定では `git config --list` のように 1 行に 1 つの `key=value` を標準出力へ出します。
+nested mapping は `.`、配列要素は `[0]` などの index で表し、空の配列・mapping は `[]`・`{}`、boolean は `true`/`false`、未設定値は `null` と表示します。
+文字列は引用符で囲まず、Windows path の backslash はそのまま表示するためコピーできます。改行・タブなどの制御文字はエスケープします。
+機械処理用には `--json` を指定します。JSON の構造は従来の `config show` と同じです。
+どちらの形式でも log は標準エラーへ出し、`--quiet` で省略できます。
+読み取り専用であり、設定・state・cache・report を作成・更新しません。
 
-```console
-tkn-audio-transcriber config show
-tkn-audio-transcriber --config "C:\path\to\config.yaml" config show
-tkn-audio-transcriber --profile local/gpu-quality config show
+```shell
+tkn-audio-transcriber config list
+tkn-audio-transcriber config list --json
+tkn-audio-transcriber --config "C:\path\to\config.yaml" config list
+tkn-audio-transcriber --profile local/gpu-quality config list
 ```
 
 ### `config profiles`
@@ -592,7 +598,7 @@ Azure error時に`faster-whisper`へfallbackしません。
 unknown key、不正type、未対応`schema_version`はerrorです。
 各設定fileをmerge前に検証し、階層設定をdeep mergeします。
 `schema_version`は上位sourceから上書きする設定値ではなくsource metadataとして扱います。
-`config show`では選択profile、利用可能profile、各effective値のsource、各設定sourceのschema状態を確認できます。
+`config list`では選択profile、利用可能profile、各effective値のsource、各設定sourceのschema状態を確認できます。
 
 application-owned設定の独立したschema versionは`"3.0.0"`です。
 3要素のstringを必須とします。
@@ -616,6 +622,7 @@ application-owned設定の独立したschema versionは`"3.0.0"`です。
 Windowsでも`markdown:`などの行からpathをそのままコピーしてExplorerで開けます。
 機械処理用のJSONが必要な場合は`transcribe ... --json`を指定してください。
 JSONのWindows pathは仕様上`\\`でエスケープされます。
+`config list` の既定表示は `key=value` です。JSON が必要な場合は `config list --json` を指定してください。
 その他のcommandの結果は従来どおりJSONです。
 進捗と診断は標準エラーへ`[LEVEL] message`形式で出します。
 `-q/--quiet`はerrorのみ、`-v/--verbose`はdebugも表示します。
