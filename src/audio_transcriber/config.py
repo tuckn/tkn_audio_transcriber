@@ -13,6 +13,7 @@ import yaml
 
 from .errors import ConfigError
 from .io_utils import atomic_write_text
+from .yaml_format import StringDateLoader, dump_yaml
 
 APPLICATION_ID = "audio_transcriber"
 SCHEMA_VERSION = "3.0.0"
@@ -362,7 +363,7 @@ def config_example_text() -> str:
 def _read_yaml(path: Path) -> tuple[str, dict[str, Any]]:
     try:
         text = path.read_text(encoding="utf-8")
-        loaded = yaml.safe_load(text)
+        loaded = yaml.load(text, Loader=StringDateLoader)
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
         raise ConfigError(f"Cannot read config file {path}: {exc}") from exc
     if loaded is None:
@@ -1336,7 +1337,7 @@ def initialize_user_config(
 def _config_text(config: dict[str, Any]) -> str:
     if config == BUILT_IN_CONFIG:
         return config_example_text()
-    body = yaml.safe_dump(config, allow_unicode=True, sort_keys=False)
+    body = dump_yaml(config)
     return f'schema_version: "{SCHEMA_VERSION}"\n\n{body}'
 
 

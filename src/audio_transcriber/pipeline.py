@@ -220,6 +220,7 @@ def _render_markdown(source: Path, config: ResolvedConfig, segments: list[Segmen
         chunk_seconds = None
     lines = [
         "---",
+        f'created: "{datetime.now().astimezone().isoformat(timespec="seconds")}"',
         f"source: {json.dumps(source.name, ensure_ascii=False)}",
         f"profile: {json.dumps(config.profile_selector, ensure_ascii=False)}",
         f"model: {json.dumps(model, ensure_ascii=False)}",

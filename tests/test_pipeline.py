@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import wave
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -337,7 +338,13 @@ def test_end_to_end_commit_validate_unchanged_and_source_immutability(
     assert validate_artifact(result.outputs.manifest, verify_source=True)["status"] == "valid"
     markdown = result.outputs.markdown.read_text(encoding="utf-8")
     _, frontmatter, body = markdown.split("---", maxsplit=2)
-    assert yaml.safe_load(frontmatter) == {
+    metadata = yaml.safe_load(frontmatter)
+    created = metadata.pop("created")
+    assert isinstance(created, str)
+    assert datetime.fromisoformat(created).tzinfo is not None
+    assert f'created: "{created}"' in frontmatter
+    assert "date" not in metadata
+    assert metadata == {
         "source": "会議.flac",
         "profile": "local/local-small",
         "model": "small",

@@ -161,6 +161,12 @@ meeting__local__local-small_transcript.jsonl
 meeting__local__local-small_transcript.manifest.json
 ```
 
+新規ノートの生成日時は `created: "2026-10-07T09:30:00+09:00"` のように、
+ローカルのタイムゾーン付き・秒精度で記録します。`date` は出力しません。
+設定の生成・移行では日付・日時をダブルクォート、Windowsパスをシングルクォートで囲みます。
+例: `output: 'C:\path\to\transcripts'`。`file:///` や `https://` のURLはパス規約の対象外です。
+既存ノートに生成日時がない場合は、移行時に現在時刻から補完しません。
+
 | ファイル | 使い方 |
 | --- | --- |
 | `*_transcript.md` | 時刻付き本文を読む主成果物。Frontmatter に入力名、プロファイル、モデル、言語、ツールのバージョンなどを記録 |
