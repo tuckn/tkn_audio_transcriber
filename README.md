@@ -577,7 +577,11 @@ SDKの既定はAzure Public Cloudの職場・学校アカウント向けです�
 CLIはローカルでモノラル16 kHz・16 bit PCM WAVを検証した後、送信用のFLACへ可逆圧縮します（`audio/flac`）。
 圧縮は正規化済みの音声サンプルを保持し、サンプリング周波数とチャンネル数は変更しません。
 追加設定は不要です。
-CLIの既存の長さ制限である2時間未満は維持し、250 MB未満の送信サイズ制限は中間WAVではなく圧縮後のFLACへ適用します。
+Azure Speech Fast Transcription の[公式上限](https://learn.microsoft.com/azure/ai-services/speech-service/speech-services-quotas-and-limits)に合わせ、音声は5時間未満、送信用FLACは500 MB未満（500,000,000 bytes未満）を受け付けます（2026-10-20確認）。
+サイズ制限は元メディアや中間WAVではなく、圧縮後のFLACへ適用します。
+上限ちょうどの入力も対象外です。明らかに上限を超える入力で認証や大容量アップロードを行わないよう、CLIでも送信前に確認します。
+この制限はAzure専用です。localには同じ時間・サイズ上限はなく、チャンク単位で処理しますが、作業ディスクの空き容量や処理時間の制約はあります。
+長い音声では通信待ち時間が増えるため、必要に応じてAzureプロファイルの `request.timeout_seconds`（既定600秒）を調整してください。これは録音時間の上限とは別の設定です。
 長さは圧縮前、FLACのサイズはcredentialやHTTP clientの作成前に検証します。
 映像frame、中間WAV、local chunkはAzureへ送りません。
 preview、job settings、manifest settingsには`upload_format: flac`を記録します。

@@ -15,6 +15,8 @@
 
 ### Changed
 
+- Azure Speech Fast Transcription の受付上限を公式仕様に合わせ、音声は2時間未満から5時間未満、送信用FLACは250 MB未満から500 MB未満へ緩和しました。送信前の確認は維持し、localの処理条件は変更していません。
+
 - 新規ノートにダブルクォート付きの `created` を追加しました。設定の生成・移行で日時とWindowsパスの引用符を統一し、設定読込時の日時表記と小数秒精度を保持します。
 
 - `config show` を `config list` に変更し、既定表示を 1 行に 1 つの `key=value` 形式にしました。

@@ -530,8 +530,8 @@ def test_azure_dry_run_never_creates_clients_or_writes(tmp_path: Path) -> None:
         "network_calls": 0,
         "normalized_audio_validation": {
             "status": "deferred_until_actual_run",
-            "duration_must_be_less_than_seconds": 7200,
-            "size_must_be_less_than_bytes": 250_000_000,
+            "duration_must_be_less_than_seconds": 18000,
+            "size_must_be_less_than_bytes": 500_000_000,
             "size_applies_to": "flac_upload",
         },
     }
@@ -643,7 +643,7 @@ def test_azure_duration_limit_is_checked_before_client_creation(
     monkeypatch.setattr(
         "audio_transcriber.pipeline.inspect_normalized_wav",
         lambda path: WavInfo(
-            duration_seconds=7200.0,
+            duration_seconds=18000.0,
             frame_count=1,
             sample_rate=16_000,
             channels=1,
@@ -664,7 +664,7 @@ def test_azure_duration_limit_is_checked_before_client_creation(
         azure_recognizer_factory=azure_factory,
     )
 
-    with pytest.raises(ValidationError, match="shorter than 2 hours"):
+    with pytest.raises(ValidationError, match="shorter than 5 hours"):
         pipeline.transcribe(
             source,
             dry_run=False,
@@ -687,7 +687,7 @@ def test_azure_size_limit_is_checked_before_client_creation(tmp_path: Path) -> N
         def encode_flac(self, normalized: Path, destination: Path) -> None:
             super().encode_flac(normalized, destination)
             with destination.open("r+b") as stream:
-                stream.seek(250_000_000 - 1)
+                stream.seek(500_000_000 - 1)
                 stream.write(b"\0")
 
     def azure_factory(
@@ -703,7 +703,7 @@ def test_azure_size_limit_is_checked_before_client_creation(tmp_path: Path) -> N
         azure_recognizer_factory=azure_factory,
     )
 
-    with pytest.raises(ValidationError, match="smaller than 250 MB"):
+    with pytest.raises(ValidationError, match="smaller than 500 MB"):
         pipeline.transcribe(
             source,
             dry_run=False,

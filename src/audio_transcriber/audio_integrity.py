@@ -13,8 +13,11 @@ NORMALIZED_CHANNELS = 1
 NORMALIZED_SAMPLE_WIDTH = 2
 MINIMUM_PREFLIGHT_BYTES = 512 * 1024 * 1024
 POST_NORMALIZE_MARGIN_BYTES = 64 * 1024 * 1024
-AZURE_MAX_DURATION_SECONDS = 2 * 60 * 60
-AZURE_MAX_FILE_BYTES = 250_000_000
+# Azure Speech Fast Transcription limits (verified 2026-10-20):
+# https://learn.microsoft.com/azure/ai-services/speech-service/speech-services-quotas-and-limits
+# Both limits are exclusive; file size applies to the uploaded FLAC, in decimal MB.
+AZURE_MAX_DURATION_SECONDS = 5 * 60 * 60
+AZURE_MAX_FILE_BYTES = 500_000_000
 
 
 @dataclass(frozen=True)
@@ -80,7 +83,8 @@ def validate_chunk_coverage(normalized: WavInfo, chunks: list[Path]) -> float:
 def validate_azure_audio_duration(info: WavInfo) -> None:
     if info.duration_seconds >= AZURE_MAX_DURATION_SECONDS:
         raise ValidationError(
-            "Azure Speech normalized audio must be shorter than 2 hours: "
+            "Azure Speech normalized audio must be shorter than "
+            f"{AZURE_MAX_DURATION_SECONDS / 3600:g} hours: "
             f"decoded={info.duration_seconds:.3f}s"
         )
 
@@ -90,7 +94,8 @@ def validate_azure_upload_limits(path: Path, info: WavInfo) -> None:
     size = path.stat().st_size
     if size >= AZURE_MAX_FILE_BYTES:
         raise ValidationError(
-            "Azure Speech FLAC upload must be smaller than 250 MB: "
+            "Azure Speech FLAC upload must be smaller than "
+            f"{AZURE_MAX_FILE_BYTES / 1_000_000:g} MB: "
             f"size={size} bytes"
         )
 

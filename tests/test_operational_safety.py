@@ -5,13 +5,14 @@ import logging
 import time
 import wave
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
 from audio_transcriber.audio_integrity import (
-    AZURE_MAX_FILE_BYTES,
     WavInfo,
     inspect_normalized_wav,
+    validate_azure_audio_duration,
     validate_azure_upload_limits,
     validate_chunk_coverage,
 )
@@ -40,11 +41,10 @@ def test_chunk_duration_mismatch_is_rejected(tmp_path: Path) -> None:
         validate_chunk_coverage(inspect_normalized_wav(normalized), [chunk])
 
 
-def test_azure_upload_size_limit_is_strict(tmp_path: Path) -> None:
-    normalized = tmp_path / "normalized.wav"
-    with normalized.open("wb") as stream:
-        stream.seek(AZURE_MAX_FILE_BYTES - 1)
-        stream.write(b"\0")
+@pytest.mark.parametrize("size", [250_000_000, 499_999_999, 500_000_000, 500_000_001])
+def test_azure_upload_size_limit_is_strict(size: int) -> None:
+    upload = Mock(spec=Path)
+    upload.stat.return_value.st_size = size
     info = WavInfo(
         duration_seconds=1.0,
         frame_count=16_000,
@@ -53,8 +53,27 @@ def test_azure_upload_size_limit_is_strict(tmp_path: Path) -> None:
         sample_width=2,
     )
 
-    with pytest.raises(ValidationError, match="smaller than 250 MB"):
-        validate_azure_upload_limits(normalized, info)
+    if size < 500_000_000:
+        validate_azure_upload_limits(upload, info)
+    else:
+        with pytest.raises(ValidationError, match="smaller than 500 MB"):
+            validate_azure_upload_limits(upload, info)
+
+
+@pytest.mark.parametrize("seconds", [7200.0, 10800.0, 17999.999, 18000.0, 18000.001])
+def test_azure_duration_limit_is_strict(seconds: float) -> None:
+    info = WavInfo(
+        duration_seconds=seconds,
+        frame_count=round(seconds * 16_000),
+        sample_rate=16_000,
+        channels=1,
+        sample_width=2,
+    )
+    if seconds < 18000:
+        validate_azure_audio_duration(info)
+    else:
+        with pytest.raises(ValidationError, match="shorter than 5 hours"):
+            validate_azure_audio_duration(info)
 
 
 def test_heartbeat_run_log_and_status_are_durable(tmp_path: Path) -> None:
