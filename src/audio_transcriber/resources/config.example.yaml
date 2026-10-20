@@ -1,4 +1,4 @@
-schema_version: "3.0.0"
+schema_version: "3.1.0"
 
 transcription:
   active:
@@ -56,11 +56,20 @@ transcription:
         profanity_filter_mode: "None"
         phrase_list:
           phrases: []
+          # UTF-8, one phrase per line. Relative to this config file.
+          files: []
         authentication:
           reuse_cached_credentials: true
         request:
           timeout_seconds: 600
           max_retries: 3
+
+generation:
+  active_profile: codex
+  profiles:
+    codex:
+      bridge_profile: codex-default
+  max_candidates: 30
 
 folders:
   output: .

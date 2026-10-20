@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import shutil
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib.resources import files
 from pathlib import Path
 from typing import Any, Literal
@@ -13,11 +13,12 @@ import yaml
 
 from .errors import ConfigError
 from .io_utils import atomic_write_text
+from .phrase_files import read_phrase_files, validate_phrase
 from .yaml_format import StringDateLoader, dump_yaml
 
 APPLICATION_ID = "audio_transcriber"
-SCHEMA_VERSION = "3.0.0"
-_SCHEMA_VERSION_PARTS = (3, 0, 0)
+SCHEMA_VERSION = "3.1.0"
+_SCHEMA_VERSION_PARTS = (3, 1, 0)
 _SCHEMA_VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 CONFIG_EXAMPLE_RESOURCE = "resources/config.example.yaml"
 
@@ -53,6 +54,7 @@ DEFAULTS: dict[str, Any] = {
     "azure_speech_diarization_enabled": False,
     "azure_speech_profanity_filter_mode": "None",
     "azure_speech_phrases": [],
+    "azure_speech_phrase_files": [],
     "azure_speech_reuse_cached_credentials": True,
     "azure_speech_max_speakers": 8,
     "azure_speech_timeout_seconds": 600,
@@ -82,6 +84,7 @@ EXPECTED_TYPES: dict[str, type[Any] | tuple[type[Any], ...]] = {
     "azure_speech_diarization_enabled": bool,
     "azure_speech_profanity_filter_mode": str,
     "azure_speech_phrases": list,
+    "azure_speech_phrase_files": list,
     "azure_speech_reuse_cached_credentials": bool,
     "azure_speech_max_speakers": int,
     "azure_speech_timeout_seconds": int,
@@ -92,6 +95,7 @@ PATH_KEYS = {"output_dir", "model_dir", "cache_dir", "state_dir"}
 AZURE_SETTING_KEYS = {
     "azure_speech_profanity_filter_mode",
     "azure_speech_phrases",
+    "azure_speech_phrase_files",
     "azure_speech_reuse_cached_credentials",
     "azure_speech_endpoint",
     "azure_speech_region",
@@ -118,7 +122,7 @@ AZURE_PROFILE_DEFAULTS: dict[str, Any] = {
     "locale": "ja-JP",
     "diarization": {"enabled": False, "max_speakers": 8},
     "profanity_filter_mode": "None",
-    "phrase_list": {"phrases": []},
+    "phrase_list": {"phrases": [], "files": []},
     "authentication": {"reuse_cached_credentials": True},
     "request": {"timeout_seconds": 600, "max_retries": 3},
 }
@@ -169,9 +173,14 @@ BUILT_IN_CONFIG: dict[str, Any] = {
         "heartbeat_seconds": 60,
         "keep_working_files": False,
     },
+    "generation": {
+        "active_profile": "codex",
+        "profiles": {"codex": {"bridge_profile": "codex-default"}},
+        "max_candidates": 30,
+    },
 }
 
-TOP_LEVEL_KEYS = {"transcription", "folders", "processing"}
+TOP_LEVEL_KEYS = {"transcription", "folders", "processing", "generation"}
 TRANSCRIPTION_KEYS = {"active", LOCAL_MODE, CLOUD_MODE}
 ACTIVE_KEYS = {"mode", "profile"}
 BACKEND_KEYS = {"provider", "profiles"}
@@ -220,6 +229,7 @@ LOCAL_PROFILE_TO_FLAT = {
 AZURE_PROFILE_TO_FLAT = {
     ("profanity_filter_mode",): "azure_speech_profanity_filter_mode",
     ("phrase_list", "phrases"): "azure_speech_phrases",
+    ("phrase_list", "files"): "azure_speech_phrase_files",
     ("authentication", "reuse_cached_credentials"): "azure_speech_reuse_cached_credentials",
     ("endpoint",): "azure_speech_endpoint",
     ("region",): "azure_speech_region",
@@ -242,6 +252,7 @@ LEGACY_LOCAL_TO_PROFILE = {
 LEGACY_AZURE_TO_PROFILE = {
     "azure_speech_profanity_filter_mode": ("profanity_filter_mode",),
     "azure_speech_phrases": ("phrase_list", "phrases"),
+    "azure_speech_phrase_files": ("phrase_list", "files"),
     "azure_speech_reuse_cached_credentials": ("authentication", "reuse_cached_credentials"),
     "azure_speech_endpoint": ("endpoint",),
     "azure_speech_region": ("region",),
@@ -304,6 +315,9 @@ class ResolvedConfig:
     active_profile_source: str
     profiles: tuple[dict[str, Any], ...]
     effective_schema_version: str = SCHEMA_VERSION
+    phrase_file_sources: tuple[dict[str, Any], ...] = ()
+    generation: dict[str, Any] = field(default_factory=dict)
+    generation_sources: dict[str, str] = field(default_factory=dict)
 
     @property
     def has_in_memory_migrations(self) -> bool:
@@ -348,6 +362,9 @@ class ResolvedConfig:
                 if key not in hidden_keys
             },
             "loaded_files": [str(path) for path in self.loaded_files],
+            "phrase_files": list(self.phrase_file_sources),
+            "generation": self.generation,
+            "generation_sources": self.generation_sources,
         }
 
 
@@ -504,10 +521,15 @@ def _validate_profile_values(profile: dict[str, Any], label: str, path: Path) ->
                 f"{label}.profanity_filter_mode must be None, Masked, Removed, or Tags"
             )
     if "phrase_list" in profile:
-        phrase_list = _mapping(profile["phrase_list"], f"{label}.phrase_list", path)
-        _reject_unknown(phrase_list, {"phrases"}, f"{label}.phrase_list", path)
+        phrase_list = _mapping(
+            {} if profile["phrase_list"] is None else profile["phrase_list"],
+            f"{label}.phrase_list", path,
+        )
+        _reject_unknown(phrase_list, {"phrases", "files"}, f"{label}.phrase_list", path)
         if "phrases" in phrase_list:
             _validate_phrases(phrase_list["phrases"])
+        if "files" in phrase_list:
+            _validate_phrase_paths(phrase_list["files"])
     if "authentication" in profile:
         authentication = _mapping(profile["authentication"], f"{label}.authentication", path)
         _reject_unknown(
@@ -657,6 +679,30 @@ def _validate_v3_layer(value: dict[str, Any], path: Path) -> None:
 
 
 def _validate_shared_layer(value: dict[str, Any], path: Path) -> None:
+    if "generation" in value:
+        generation = _mapping(value["generation"], "generation", path)
+        _reject_unknown(
+            generation, {"active_profile", "profiles", "max_candidates"}, "generation", path
+        )
+        if "active_profile" in generation:
+            _require_type(generation["active_profile"], str, "generation.active_profile", path)
+            if not generation["active_profile"].strip():
+                raise ConfigError("generation.active_profile must not be blank")
+        if "max_candidates" in generation:
+            _positive_integer(generation["max_candidates"], "generation.max_candidates", path)
+            if generation["max_candidates"] > 500:
+                raise ConfigError("generation.max_candidates must be at most 500")
+        if "profiles" in generation:
+            profiles = _mapping(generation["profiles"], "generation.profiles", path)
+            for name, settings in profiles.items():
+                if not isinstance(name, str) or not name.strip():
+                    raise ConfigError("Generation profile names must not be blank")
+                settings = _mapping(settings, f"generation.profiles.{name}", path)
+                _reject_unknown(settings, {"bridge_profile"}, "generation profile", path)
+                if "bridge_profile" in settings:
+                    bridge_profile = settings["bridge_profile"]
+                    if not isinstance(bridge_profile, str) or not bridge_profile.strip():
+                        raise ConfigError("bridge_profile must be a non-empty string")
     if "folders" in value:
         folders = _mapping(value["folders"], "folders", path)
         _reject_unknown(folders, FOLDER_KEYS, "folders", path)
@@ -692,6 +738,15 @@ def _validate_phrases(phrases: Any) -> None:
         raise ConfigError("phrase_list.phrases must be a list of at most 500 phrases")
     if any(not isinstance(phrase, str) or not phrase.strip() for phrase in phrases):
         raise ConfigError("phrase_list.phrases must contain non-empty strings")
+    for phrase in phrases:
+        validate_phrase(phrase)
+
+
+def _validate_phrase_paths(paths: Any) -> None:
+    if not isinstance(paths, list) or any(
+        not isinstance(path, str) or not path.strip() or "\x00" in path for path in paths
+    ):
+        raise ConfigError("phrase_list.files must be a list of non-empty paths")
 
 
 def _validate_flat_values(
@@ -700,6 +755,7 @@ def _validate_flat_values(
     azure_active = values.get("provider") == AZURE_PROVIDER
     if azure_active:
         _validate_phrases(values["azure_speech_phrases"])
+        _validate_phrase_paths(values["azure_speech_phrase_files"])
         if values["azure_speech_profanity_filter_mode"] not in (
             "None",
             "Masked",
@@ -827,6 +883,9 @@ def _merge_config(
     prefix: tuple[str, ...] = (),
 ) -> None:
     for key, value in layer.items():
+        if key == "phrase_list" and value is None:
+            # A commented-out YAML block explicitly clears inherited vocabulary.
+            value = {"phrases": [], "files": []}
         key_path = (*prefix, str(key))
         if isinstance(value, dict):
             existing = target.get(key)
@@ -922,7 +981,7 @@ def _apply_v2_layer(
             _set_nested(layer, ("transcription", "active", "mode"), active_mode)
             _set_nested(layer, ("transcription", "active", "profile"), active_name)
 
-    for key in ("folders", "processing"):
+    for key in ("folders", "processing", "generation"):
         if key in v2:
             layer[key] = deepcopy(v2[key])
     _merge_config(config, layer, sources, label)
@@ -1150,6 +1209,7 @@ def resolve_config(
     profile: str | None = None,
     cli_overrides: dict[str, Any] | None = None,
     home: Path | None = None,
+    phrase_files: list[Path] | None = None,
 ) -> ResolvedConfig:
     current_directory = cwd.resolve()
     home_directory = (home or Path.home()).resolve()
@@ -1157,6 +1217,7 @@ def resolve_config(
     source_paths: dict[tuple[str, ...], str] = {}
     _record_sources(config, source_paths, "built-in default")
     loaded_files: list[Path] = []
+    source_directories: dict[str, Path] = {"built-in default": current_directory}
 
     candidates: list[tuple[Path, str, str, bool]] = [
         (
@@ -1209,6 +1270,7 @@ def resolve_config(
         layer, schema_report, schema_major = _load_yaml(path)
         source_report.update(schema_report)
         source_label = f"{label}: {path}"
+        source_directories[source_label] = path.parent
         if schema_major == 1:
             _apply_legacy_layer(config, layer, source_paths, source_label)
         elif schema_major == 2:
@@ -1258,6 +1320,31 @@ def resolve_config(
             sources[key] = "CLI option"
 
     _validate_flat_values(values, require_provider_settings=True)
+    phrase_records: tuple[dict[str, Any], ...] = ()
+    if phrase_files and selected_mode != CLOUD_MODE:
+        raise ConfigError("--phrase-file requires a cloud transcription profile")
+    if selected_mode == CLOUD_MODE:
+        file_key = "azure_speech_phrase_files"
+        base = source_directories.get(sources[file_key], current_directory)
+        configured_paths = [Path(item).expanduser() for item in values[file_key]]
+        resolved_paths = [
+            (item if item.is_absolute() else base / item).resolve()
+            for item in configured_paths
+        ]
+        for item in phrase_files or []:
+            item = item.expanduser()
+            resolved_paths.append(
+                (item if item.is_absolute() else current_directory / item).resolve()
+            )
+        values[file_key] = [str(item) for item in dict.fromkeys(resolved_paths)]
+        if phrase_files:
+            sources[file_key] += " + CLI --phrase-file"
+        values["azure_speech_phrases"], phrase_records = read_phrase_files(
+            values["azure_speech_phrases"], resolved_paths
+        )
+        if resolved_paths:
+            sources["azure_speech_phrases"] += " + phrase files"
+        _validate_flat_values(values, require_provider_settings=True)
     _resolve_paths(values, current_directory)
     transcription_config = _typed_transcription(selected_mode, selected_profile, values)
     return ResolvedConfig(
@@ -1271,6 +1358,12 @@ def resolve_config(
         active_profile=selected_profile,
         active_profile_source=active_profile_source,
         profiles=profile_summaries,
+        phrase_file_sources=phrase_records,
+        generation=deepcopy(config["generation"]),
+        generation_sources={
+            ".".join(key[1:]): source
+            for key, source in source_paths.items() if key[0] == "generation"
+        },
     )
 
 

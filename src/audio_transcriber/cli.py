@@ -116,6 +116,10 @@ def _parser() -> argparse.ArgumentParser:
         help="Source audio or video file with an audio stream (never modified).",
     )
     transcribe.add_argument("--output-dir", type=Path, help="Transcript output directory.")
+    transcribe.add_argument(
+        "--phrase-file", type=Path, action="append",
+        help="Reviewed UTF-8 vocabulary (one phrase per line); repeat to add files to config.",
+    )
     transcribe.add_argument("--model", help="Model name or local model directory.")
     transcribe.add_argument("--language", help="Language code, for example ja or en.")
     transcribe.add_argument("--chunk-seconds", type=int, help="Chunk length in seconds.")
@@ -200,6 +204,23 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the transcription result as machine-readable JSON instead of plain text.",
     )
+
+    phrases = commands.add_parser("phrases", help="Prepare vocabulary for human review.")
+    phrase_commands = phrases.add_subparsers(dest="phrases_command", required=True)
+    suggest = phrase_commands.add_parser(
+        "suggest", help="Use GenAI Bridge to propose phrases from transcript JSONL, then stop."
+    )
+    suggest.add_argument("transcript", type=Path, help="Transcript JSONL produced by this CLI.")
+    suggest.add_argument("--output-dir", type=Path, required=True, help="New review directory.")
+    suggest.add_argument("--generation-profile", help="Application generation profile name.")
+    suggest.add_argument(
+        "--context-file", type=Path, help="Optional UTF-8 meeting background text."
+    )
+    suggest.add_argument("--max-candidates", type=int, help="Maximum candidates (default: config).")
+    suggest.add_argument(
+        "--dry-run", action="store_true", help="Plan without generation or writes."
+    )
+    suggest.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
 
     validate = commands.add_parser("validate", help="Validate output hashes and manifest.")
     validate.add_argument("manifest", type=Path, help="Transcript manifest JSON.")
@@ -296,6 +317,7 @@ def _resolve(args: argparse.Namespace, overrides: dict[str, Any] | None = None) 
         explicit_config=args.config,
         profile=args.profile,
         cli_overrides=overrides,
+        phrase_files=getattr(args, "phrase_file", None),
     )
 
 
@@ -414,6 +436,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _json_result(result.to_dict())
             else:
                 _text_result(result)
+            return 0
+        if args.command == "phrases":
+            from .phrase_suggestions import suggest_phrases
+
+            config = _resolve(args)
+            _warn_in_memory_migrations(config, logger)
+            logger.info(
+                "Planning phrase candidates" if args.dry_run else "Generating phrase candidates"
+            )
+            payload = suggest_phrases(
+                args.transcript, output_dir=args.output_dir, config=config,
+                generation_profile=args.generation_profile, context_file=args.context_file,
+                max_candidates=args.max_candidates, dry_run=args.dry_run,
+            )
+            if args.json:
+                _json_result(payload)
+            else:
+                print("\n".join(_config_lines(payload)))
+                if not args.dry_run:
+                    print("Review review.md, edit phrases.txt, then run transcribe --phrase-file.")
             return 0
         if args.command == "validate":
             _json_result(validate_artifact(args.manifest, verify_source=args.verify_source))

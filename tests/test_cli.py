@@ -32,6 +32,9 @@ def test_transcribe_help_describes_audio_and_video(capsys: object) -> None:
 def test_transcribe_prints_copyable_paths_by_default(
     tmp_path: Path, monkeypatch: object, capsys: object
 ) -> None:
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))  # type: ignore[attr-defined]
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))  # type: ignore[attr-defined]
+    monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
     source = tmp_path / "source.wav"
     outputs = OutputPaths(
         markdown=tmp_path / "meeting_transcript.md",
@@ -102,8 +105,8 @@ def test_config_list_outputs_machine_readable_json(
     assert main(["config", "list", "--json"]) == 0
     captured = capsys.readouterr()  # type: ignore[attr-defined]
     payload = json.loads(captured.out)
-    assert payload["schema_version"] == "3.0.0"
-    assert payload["effective_schema_version"] == "3.0.0"
+    assert payload["schema_version"] == "3.1.0"
+    assert payload["effective_schema_version"] == "3.1.0"
     assert payload["has_in_memory_migrations"] is False
     assert payload["active_mode"] == "local"
     assert payload["active_profile"] == "local-small"
@@ -111,8 +114,8 @@ def test_config_list_outputs_machine_readable_json(
         "kind": "built_in",
         "path": None,
         "exists": True,
-        "schema_version": "3.0.0",
-        "effective_schema_version": "3.0.0",
+        "schema_version": "3.1.0",
+        "effective_schema_version": "3.1.0",
         "migration": None,
     }
     assert payload["values"]["model"]["value"] == "small"
@@ -329,7 +332,7 @@ def test_config_init_and_migrate_commands(
     assert main(["config", "init", str(target)]) == 0
     initialized = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
     assert initialized["status"] == "created"
-    assert target.read_text(encoding="utf-8").startswith('schema_version: "3.0.0"')
+    assert target.read_text(encoding="utf-8").startswith('schema_version: "3.1.0"')
 
     target.write_text("schema_version: 1\nlanguage: en\n", encoding="utf-8")
     assert main(["config", "migrate", str(target), "--dry-run"]) == 0
@@ -340,7 +343,7 @@ def test_config_init_and_migrate_commands(
     assert main(["config", "migrate", str(target)]) == 0
     migrated = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
     assert migrated["status"] == "migrated"
-    assert target.read_text(encoding="utf-8").startswith('schema_version: "3.0.0"')
+    assert target.read_text(encoding="utf-8").startswith('schema_version: "3.1.0"')
     assert Path(migrated["backup_path"]).is_file()
 
 

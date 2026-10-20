@@ -72,7 +72,9 @@ uv tool install .
 tkn-audio-transcriber --version
 ```
 
-`tkn-audio-transcriber 0.10.0` のようにパッケージのバージョンが表示されれば導入できています。コマンドとオプションは `tkn-audio-transcriber --help`、各コマンドの詳細は `tkn-audio-transcriber transcribe --help` などで確認できます。
+`tkn-audio-transcriber 0.11.0` のようにパッケージのバージョンが表示されれば導入できています。コマンドとオプションは `tkn-audio-transcriber --help`、各コマンドの詳細は `tkn-audio-transcriber transcribe --help` などで確認できます。
+
+ソースを更新した後は、同じフォルダで `uv tool install . --reinstall` を実行してください。
 
 ## 初期設定
 
@@ -147,6 +149,7 @@ tkn-audio-transcriber status
 | 旧設定を移す | [`config migrate`](#config-migrate) | 旧スキーマを検証し、バックアップ後に更新する |
 | モデルを事前取得する | [`model download`](#model-download) | ローカル認識モデルをダウンロードする |
 | 文字起こしを作る | [`transcribe`](#transcribe) | 音声・動画から 4 種類の成果物を作る |
+| 用語候補を作る | [`phrases suggest`](#phrases-suggest) | 文字起こしから候補を生成し、人による確認・修正でいったん止める |
 | 状況・成果物を調べる | [`status`](#status)、[`validate`](#validate) | 保存済みジョブの状態や出力ハッシュを確認する |
 | 完了済みの途中状態を整理する | [`cleanup`](#cleanup) | 対象を表示し、`--apply` 指定時だけ削除する |
 
@@ -336,6 +339,79 @@ heartbeatは既定60秒です。
 `--heartbeat-seconds`または設定fileで変更できます。
 これは長いASR処理が生存していることを示しますが、ASRの強制timeoutではありません。
 
+### `phrases suggest`
+
+初回の文字起こしから固有名詞・専門用語の候補を作り、確認後に同じ音声を再認識できます。
+生成AIには文字起こしと任意の参考テキストを渡します。音声は渡しません。
+推測した訂正は元文からの抽出と区別し、引用が実際の発言テキストに含まれることを検査します。
+時刻は元のJSONLから付けるため、候補を確認する箇所を探せます。
+用語指定による改善は保証されないので、初回と再認識の結果は別フォルダに残してください。
+
+まず [tkn-genai-bridge](https://github.com/tuckn/tkn_genai_bridge) の接続設定を用意します。
+このCLIにはBridgeを依存パッケージとして同梱し、接続先・モデル・認証は
+`~/.tkn/genai_bridge/config.yaml` のプロファイルで管理します。
+このCLIの設定には次の項目を追加できます。省略時も同じ既定値です。
+
+```yaml
+generation:
+  active_profile: codex
+  profiles:
+    codex:
+      bridge_profile: codex-default
+  max_candidates: 30
+```
+
+`--generation-profile` はこのCLIの `generation.profiles` の名前です。
+音声認識に使う `--profile cloud/azure-ja` とは別の選択です。
+クラウド接続のBridgeプロファイルを選ぶと、文字起こし・参考テキストがその接続先に送信されます。
+
+次のPowerShell例では、初回の出力を `first`、確認用ファイルを `vocabulary`、
+修正後の用語による再認識結果を `second` に保存します。
+事前に `cloud/azure-ja` のAzureエンドポイントを設定してください。
+
+```powershell
+# 1. 初回の文字起こし
+tkn-audio-transcriber --profile cloud/azure-ja transcribe "C:\path\to\meeting.m4a" `
+  --output-dir "C:\path\to\first" --allow-cloud-upload
+
+# 2. 生成内容・接続先・概算tokenを確認（通信・保存なし）
+tkn-audio-transcriber phrases suggest `
+  "C:\path\to\first\meeting__cloud__azure-ja_transcript.jsonl" `
+  --output-dir "C:\path\to\vocabulary" --dry-run
+
+# 3. 用語候補を生成。vocabulary は未作成のフォルダを指定
+tkn-audio-transcriber phrases suggest `
+  "C:\path\to\first\meeting__cloud__azure-ja_transcript.jsonl" `
+  --output-dir "C:\path\to\vocabulary"
+
+# 4. review.md を読み、phrases.txt の単語を修正・削除
+notepad "C:\path\to\vocabulary\phrases.txt"
+
+# 5. 確認した用語を使って再認識
+tkn-audio-transcriber --profile cloud/azure-ja transcribe "C:\path\to\meeting.m4a" `
+  --phrase-file "C:\path\to\vocabulary\phrases.txt" `
+  --output-dir "C:\path\to\second" --allow-cloud-upload
+```
+
+| 出力 | 用途 |
+| --- | --- |
+| `phrases.txt` | 編集する用語一覧。1行1用語。不要な行を削除する |
+| `review.md` | 候補、抽出／訂正の推測、理由、元の引用、セグメント時刻 |
+| `candidates.json` | 引用照合済みの候補データ。生成時の記録として保持する |
+| `manifest.json` | 元テキストのhash、生成情報、生成時点の成果物hash |
+
+候補生成は `review_required` で終了し、再文字起こしは自動実行しません。
+`phrases.txt` の手動編集後は生成時のhashと変わりますが、そのまま再認識に使用できます。
+生成AIが候補を挙げなかった場合は、空の用語一覧と説明を出します。
+再生成時は別の新規出力フォルダを指定してください。既存フォルダは空でも置換しません。
+生成失敗や引用不一致の場合は、確認用フォルダを公開しません。自動再試行もしません。
+
+入力は本CLIが出力するJSONL（`index`、`start`、`end`、`text` が必要）です。
+`--context-file` でUTF-8の議題・製品名などを追加できます。
+`--max-candidates 20` でその回の候補数上限を変更でき、`--json` で結果をJSON表示できます。
+候補数は1〜500、既定30です。入力各ファイルは4 MBまで、プロンプト全体は120,000文字までです。
+上限超過時は黙って切り捨てずに停止するため、長いJSONLは行単位で分けて実行してください。
+
 ### `validate`
 
 manifest schemaと、全出力のfile size・SHA-256を検証します。
@@ -462,7 +538,7 @@ tkn-audio-transcriber model download small --dry-run
 実際の Speech リソース名は、ユーザー設定または Git から除外した作業ディレクトリ設定に保存します。次は Azure 実行に必要な設定の抜粋です。既存の設定は残し、`endpoint` のプレースホルダーを自分の Speech リソースの URL に置き換えてください。
 
 ```yaml
-schema_version: "3.0.0"
+schema_version: "3.1.0"
 transcription:
   active:
     mode: cloud
@@ -530,6 +606,29 @@ phrase_list:
 ```
 
 表記と読みの対応付けは`phrase_list`では指定できません。
+
+共通の用語は外部ファイルでも指定できます。次もAzureプロファイル内の設定です。
+
+```yaml
+phrase_list:
+  phrases:
+    - Microsoft Azure
+  files:
+    - ./vocabulary/common.txt
+```
+
+ファイルはUTF-8（BOM付きも可）の1行1用語で、空行と先頭が `#` のコメント行を無視します。
+`C#` など用語内の `#` は保持します。各ファイルの上限は1 MBです。
+`files` の相対パスはその値を定義した設定ファイルの場所が基準で、
+`transcribe --phrase-file` の相対パスは実行フォルダが基準です。
+`--phrase-file` は複数回指定でき、設定内の `phrases` → `files` → CLI指定ファイルの順に結合します。
+前後の空白と同じ表記の重複を除き、結合後500件を超えたら送信前に停止します。
+設定の上位レイヤーで指定した `phrases`／`files` のリストは、各々下位のリストを置換します。
+`phrase_list: null`（中身をすべてコメントアウトした場合も含む）は両方のリストを空にします。
+存在しないファイルや不正なUTF-8はエラーになり、ローカル認識での `--phrase-file` も拒否します。
+有効な用語の変更は再開判定に反映され、別の認識として扱います。
+用語の実内容と読み込んだファイルのhash・出典をjob／manifestに残します。
+
 用語は音声とともにAzureへ送信し、ローカルのjob・manifest設定にも記録します。
 `profanity_filter_mode`は`"None"`、`Masked`、`Removed`、`Tags`から選びます。
 認識設定を変更するとjobのfingerprintも変わります。
@@ -610,14 +709,14 @@ unknown key、不正type、未対応`schema_version`はerrorです。
 `schema_version`は上位sourceから上書きする設定値ではなくsource metadataとして扱います。
 `config list`では選択profile、利用可能profile、各effective値のsource、各設定sourceのschema状態を確認できます。
 
-application-owned設定の独立したschema versionは`"3.0.0"`です。
+application-owned設定の独立したschema versionは`"3.1.0"`です。
 3要素のstringを必須とします。
-構造を変えないschema 3の新しいPatch（例: `"3.0.7"`）も受け付けます。
+既存の`3.0.x`設定は編集不要で、構造を変えない新しいPatch（例: `"3.1.7"`）も受け付けます。
 新しいMinor/Major、検証済み移行がない古いversion、不正形式、version欠落は、必要なactionを示すerrorになります。
 
 平坦な`1.0.x`、`1.1.x`、旧integer `schema_version: 1`、混在profile形式の`2.0.x`はin-memoryでlocal/cloud分離構造へ変換して読み取り、warningを表示します。
 読み取りだけではfileを書き換えません。
-`config migrate`を実行すると、validation、backup、atomic replacementを経てschema `"3.0.0"`を永続化します。
+schema 1・2に`config migrate`を実行すると、validation、backup、atomic replacementを経てschema `"3.1.0"`を永続化します。
 
 ## 再実行と失敗時の動作
 

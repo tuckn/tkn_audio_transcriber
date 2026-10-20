@@ -332,6 +332,8 @@ def _job_settings(config: ResolvedConfig) -> dict[str, object]:
     }
     if isinstance(config.transcription, AzureSpeechTranscriptionConfig):
         settings["azure_speech_endpoint"] = endpoint_type(config.transcription.endpoint)
+        if config.phrase_file_sources:
+            settings["phrase_files"] = list(config.phrase_file_sources)
     return settings
 
 
@@ -735,6 +737,8 @@ class TranscriptionPipeline:
                     "max_retries": transcription.max_retries,
                     "upload_format": "flac",
                 }
+                if self.config.phrase_file_sources:
+                    settings["phrase_files"] = list(self.config.phrase_file_sources)
                 api_version = transcription.api_version
                 region = transcription.region
                 locale = transcription.locale

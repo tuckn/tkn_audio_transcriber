@@ -228,7 +228,7 @@ def test_schema_1_1_remains_readable_and_migratable(tmp_path: Path) -> None:
     assert resolved.values["provider"] == "faster-whisper"
     assert resolved.values["model"] == "medium"
     assert planned["from_schema_version"] == "1.1.0"
-    assert planned["to_schema_version"] == "3.0.0"
+    assert planned["to_schema_version"] == SCHEMA_VERSION
     assert planned["active_mode"] == "local"
     assert planned["active_profile"] == "local-small"
 
@@ -258,13 +258,13 @@ def test_schema_2_profiles_are_grouped_in_memory_and_migratable(tmp_path: Path) 
     assert resolved.transcription.mode == "cloud"
     assert isinstance(resolved.transcription, AzureSpeechTranscriptionConfig)
     assert planned["from_schema_version"] == "2.0.0"
-    assert planned["to_schema_version"] == "3.0.0"
+    assert planned["to_schema_version"] == SCHEMA_VERSION
     assert planned["active_mode"] == "cloud"
 
     migrated = migrate_config_file(config)
     migrated_yaml = yaml.safe_load(config.read_text(encoding="utf-8"))
     assert migrated["status"] == "migrated"
-    assert migrated_yaml["schema_version"] == "3.0.0"
+    assert migrated_yaml["schema_version"] == SCHEMA_VERSION
     assert migrated_yaml["transcription"]["active"] == {
         "mode": "cloud",
         "profile": "azure-custom",
@@ -341,7 +341,7 @@ def test_packaged_example_has_hierarchical_complete_schema(tmp_path: Path) -> No
 
     assert text.splitlines()[0] == f'schema_version: "{SCHEMA_VERSION}"'
     assert loaded["schema_version"] == SCHEMA_VERSION
-    assert set(loaded) == {"schema_version", "transcription", "folders", "processing"}
+    assert set(loaded) == {"schema_version", "transcription", "folders", "processing", "generation"}
     assert loaded["transcription"]["active"] == {
         "mode": "local",
         "profile": "local-small",
@@ -399,7 +399,7 @@ def test_config_migrate_restructures_with_dry_run_backup_and_atomic_update(
     migrated = migrate_config_file(target)
     migrated_yaml = yaml.safe_load(target.read_text(encoding="utf-8"))
     assert migrated["status"] == "migrated"
-    assert migrated_yaml["schema_version"] == "3.0.0"
+    assert migrated_yaml["schema_version"] == SCHEMA_VERSION
     assert migrated_yaml["transcription"]["active"] == {
         "mode": "local",
         "profile": "local-small",

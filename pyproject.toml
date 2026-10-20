@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tkn-audio-transcriber"
-version = "0.10.0"
+version = "0.11.0"
 description = "A resumable CLI for local or Azure Speech transcription of audio and video."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -16,6 +16,7 @@ dependencies = [
   "huggingface-hub>=0.30.0,<2",
   "httpx>=0.28.1,<1",
   "PyYAML>=6.0.2,<7",
+  "tkn-genai-bridge @ https://github.com/tuckn/tkn_genai_bridge/archive/24d9d6c1ff75c2cc5ca0a0fe3ad5c455219d8bce.zip",
 ]
 
 [project.scripts]
@@ -31,6 +32,9 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/audio_transcriber"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.pytest.ini_options]
 addopts = "-q"

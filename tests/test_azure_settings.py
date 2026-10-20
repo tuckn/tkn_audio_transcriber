@@ -32,7 +32,7 @@ def test_explicit_example_defaults_and_effective_defaults(tmp_path: Path) -> Non
     ]
     assert profile["diarization"] == {"enabled": False, "max_speakers": 8}
     assert profile["profanity_filter_mode"] == "None"
-    assert profile["phrase_list"] == {"phrases": []}
+    assert profile["phrase_list"] == {"phrases": [], "files": []}
     assert profile["authentication"] == {"reuse_cached_credentials": True}
     config = resolve_cloud(tmp_path).transcription
     assert isinstance(config, AzureSpeechTranscriptionConfig)

@@ -8,12 +8,20 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-20
+
 ### Added
+
+- Azure用語リストにUTF-8外部ファイルを指定できる `phrase_list.files` と、実行ごとに追加する `transcribe --phrase-file` に対応しました。重複を除いて上限を検査し、用語の変更を再認識・再開判定に反映します。
+- `phrases suggest` を追加しました。Tkn GenAI Bridgeを使って文字起こしJSONLから用語候補を生成し、引用照合済みの理由・時刻と編集用の `phrases.txt` を保存します。人による確認後に明示的に再文字起こしできます。
+- `generation` 設定と `--generation-profile`、参考文書の `--context-file`、通信も保存もしない `--dry-run` に対応しました。確認済みファイルを守るため、候補出力は新規フォルダに限ります。
 
 - `transcribe --json` を追加し、文字起こし結果を機械可読な JSON で取得できるようにしました。
 - この CHANGELOG を追加しました。
 
 ### Changed
+
+- 設定schemaを `3.1.0` にしました。既存の `3.0.x` は編集せず使えます。空の `phrase_list:` は用語指定なしとして扱います。
 
 - Azure Speech Fast Transcription の受付上限を公式仕様に合わせ、音声は2時間未満から5時間未満、送信用FLACは250 MB未満から500 MB未満へ緩和しました。送信前の確認は維持し、localの処理条件は変更していません。
 

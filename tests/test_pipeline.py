@@ -25,7 +25,7 @@ from audio_transcriber.errors import (
     ValidationError,
 )
 from audio_transcriber.io_utils import sha256_file
-from audio_transcriber.models import Segment
+from audio_transcriber.models import Segment, TranscriptionResult
 from audio_transcriber.pipeline import TranscriptionPipeline
 from audio_transcriber.validation import validate_artifact
 
@@ -189,6 +189,48 @@ def make_logger() -> logging.Logger:
     logger.handlers.clear()
     logger.addHandler(logging.NullHandler())
     return logger
+
+
+def test_reviewed_phrase_changes_submit_again_and_keep_first_outputs(tmp_path: Path) -> None:
+    source = tmp_path / "meeting.wav"
+    source.write_bytes(b"unchanged source")
+    terms = tmp_path / "phrases.txt"
+    terms.write_text("Initial Name\n", encoding="utf-8")
+    seen: list[tuple[str, ...]] = []
+
+    def run(output: str) -> TranscriptionResult:
+        config = resolve_config(
+            cwd=tmp_path, home=tmp_path / "home", profile="cloud/azure-ja",
+            phrase_files=[terms], cli_overrides={
+                "azure_speech_endpoint": "https://example.cognitiveservices.azure.com/",
+                "output_dir": str(tmp_path / output), "state_dir": str(tmp_path / "state"),
+            },
+        )
+
+        def factory(
+            cfg: AzureSpeechTranscriptionConfig, logger: logging.Logger
+        ) -> FakeAzureRecognizer:
+            seen.append(cfg.phrases)
+            return FakeAzureRecognizer([])
+
+        return TranscriptionPipeline(
+            config=config, logger=make_logger(), ffmpeg=FakeFfmpeg([]),  # type: ignore[arg-type]
+            azure_recognizer_factory=factory,
+        ).transcribe(source, dry_run=False, overwrite=False, allow_cloud_upload=True)
+
+    first = run("first")
+    original = first.outputs.jsonl.read_bytes()
+    assert run("first").status == "unchanged"
+    terms.write_text("Corrected Name\n", encoding="utf-8")
+    with pytest.raises(ValidationError, match="already exists"):
+        run("first")
+    second = run("second")
+    assert seen == [("Initial Name",), ("Corrected Name",)]
+    assert first.fingerprint != second.fingerprint
+    assert first.outputs.jsonl.read_bytes() == original
+    manifest = json.loads(second.outputs.manifest.read_text(encoding="utf-8"))
+    assert manifest["settings"]["phrase_list"]["phrases"] == ["Corrected Name"]
+    assert manifest["settings"]["phrase_files"][0]["sha256"] == sha256_file(terms)
 
 
 def test_dry_run_changes_nothing_and_preserves_source(tmp_path: Path) -> None:
