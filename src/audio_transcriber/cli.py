@@ -106,16 +106,13 @@ def _parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="Print the download plan without writing."
     )
 
-    transcribe = commands.add_parser(
-        "transcribe", help="Normalize, split, transcribe, verify, and commit outputs."
-    )
+    transcribe = argparse.ArgumentParser(add_help=False)
     transcribe.add_argument(
         "audio",
         type=Path,
         metavar="SOURCE",
         help="Source audio or video file with an audio stream (never modified).",
     )
-    transcribe.add_argument("--output-dir", type=Path, help="Transcript output directory.")
     transcribe.add_argument(
         "--phrase-file", type=Path, action="append",
         help="Reviewed UTF-8 vocabulary (one phrase per line); repeat to add files to config.",
@@ -195,15 +192,31 @@ def _parser() -> argparse.ArgumentParser:
         help="Validate input and print planned outputs without writing.",
     )
     transcribe.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Replace existing differing or incomplete outputs after successful processing.",
-    )
-    transcribe.add_argument(
         "--json",
         action="store_true",
         help="Print the transcription result as machine-readable JSON instead of plain text.",
     )
+
+    transcribe_command = commands.add_parser(
+        "transcribe", parents=[transcribe],
+        help="Normalize, split, transcribe, verify, and commit outputs.",
+    )
+    transcribe_command.add_argument("--output-dir", type=Path, help="Transcript output directory.")
+    transcribe_command.add_argument(
+        "--overwrite", action="store_true",
+        help="Replace existing differing or incomplete outputs after successful processing.",
+    )
+    prepare = commands.add_parser(
+        "prepare", parents=[transcribe],
+        help="Transcribe audio, suggest vocabulary, then stop for human review.",
+    )
+    prepare.add_argument(
+        "--output-dir", type=Path, required=True,
+        help="Workflow directory containing transcript/ and vocabulary/.",
+    )
+    prepare.add_argument("--generation-profile", help="Application generation profile name.")
+    prepare.add_argument("--context-file", type=Path, help="Optional UTF-8 background text.")
+    prepare.add_argument("--max-candidates", type=int, help="Maximum vocabulary candidates.")
 
     phrases = commands.add_parser("phrases", help="Prepare vocabulary for human review.")
     phrase_commands = phrases.add_subparsers(dest="phrases_command", required=True)
@@ -397,7 +410,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
             return 0
-        if args.command == "transcribe":
+        if args.command in {"transcribe", "prepare"}:
             overrides = {
                 "output_dir": _path_value(args.output_dir),
                 "model": args.model,
@@ -426,6 +439,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
             config = _resolve(args, overrides)
             _warn_in_memory_migrations(config, logger)
+            if args.command == "prepare":
+                from .prepare import prepare_transcription
+
+                payload = prepare_transcription(
+                    args.audio, config=config, logger=logger,
+                    generation_profile=args.generation_profile,
+                    context_file=args.context_file, max_candidates=args.max_candidates,
+                    dry_run=args.dry_run, allow_cloud_upload=args.allow_cloud_upload,
+                )
+                if args.json:
+                    _json_result(payload)
+                else:
+                    print("\n".join(_config_lines(payload)))
+                    if not args.dry_run:
+                        print("Review review.md and edit phrases.txt before retranscribing.")
+                return 0
             result = TranscriptionPipeline(config=config, logger=logger).transcribe(
                 args.audio,
                 dry_run=args.dry_run,

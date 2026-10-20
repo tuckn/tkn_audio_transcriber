@@ -202,6 +202,36 @@ def _review(candidates: list[dict[str, Any]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def preflight_phrase_generation(
+    config: ResolvedConfig, *, generation_profile: str | None = None,
+    context_file: Path | None = None, max_candidates: int | None = None,
+) -> dict[str, Any]:
+    """Validate known inputs offline before paying for a new transcription."""
+    from tkn_genai_bridge import GenAIError, load_profile
+
+    name, bridge_profile, default_maximum = _generation_selection(config, generation_profile)
+    maximum = default_maximum if max_candidates is None else max_candidates
+    if type(maximum) is not int or not 1 <= maximum <= 500:
+        raise ConfigError("max_candidates must be an integer between 1 and 500")
+    context, context_hash = _read_input(context_file.expanduser()) if context_file else ("", None)
+    if len(context) > MAX_PROMPT_CHARACTERS:
+        raise ValidationError("Suggestion context exceeds 120000 characters")
+    try:
+        profile = load_profile(bridge_profile)
+    except GenAIError as exc:
+        raise ConfigError(f"Phrase generation configuration failed ({exc.code})") from None
+    return {
+        "generation_profile": name, "bridge_profile": bridge_profile,
+        "provider": profile.provider, "model": profile.model, "local_only": profile.local_only,
+        "max_candidates": maximum, "context_sha256": context_hash,
+        "transcript_validation": "after_transcription",
+        "token_estimate": None, "cost_estimate": None,
+        "estimate_reason": (
+            "Transcript estimates are deferred; use phrases suggest --dry-run on saved JSONL"
+        ),
+    }
+
+
 def suggest_phrases(
     transcript: Path,
     *,

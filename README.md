@@ -72,7 +72,7 @@ uv tool install .
 tkn-audio-transcriber --version
 ```
 
-`tkn-audio-transcriber 0.11.0` のようにパッケージのバージョンが表示されれば導入できています。コマンドとオプションは `tkn-audio-transcriber --help`、各コマンドの詳細は `tkn-audio-transcriber transcribe --help` などで確認できます。
+`tkn-audio-transcriber 0.12.0` のようにパッケージのバージョンが表示されれば導入できています。コマンドとオプションは `tkn-audio-transcriber --help`、各コマンドの詳細は `tkn-audio-transcriber transcribe --help` などで確認できます。
 
 ソースを更新した後は、同じフォルダで `uv tool install . --reinstall` を実行してください。
 
@@ -149,6 +149,7 @@ tkn-audio-transcriber status
 | 旧設定を移す | [`config migrate`](#config-migrate) | 旧スキーマを検証し、バックアップ後に更新する |
 | モデルを事前取得する | [`model download`](#model-download) | ローカル認識モデルをダウンロードする |
 | 文字起こしを作る | [`transcribe`](#transcribe) | 音声・動画から 4 種類の成果物を作る |
+| 文字起こしと用語候補を一括作成する | [`prepare`](#prepare) | 初回の文字起こしから用語候補生成まで実行し、人による確認で止める |
 | 用語候補を作る | [`phrases suggest`](#phrases-suggest) | 文字起こしから候補を生成し、人による確認・修正でいったん止める |
 | 状況・成果物を調べる | [`status`](#status)、[`validate`](#validate) | 保存済みジョブの状態や出力ハッシュを確認する |
 | 完了済みの途中状態を整理する | [`cleanup`](#cleanup) | 対象を表示し、`--apply` 指定時だけ削除する |
@@ -287,7 +288,7 @@ tkn-audio-transcriber transcribe "C:\path\to\town-hall.mp4" `
   指定しない場合は停止する
 - `--keep-working-files`: 検証成功後も正規化WAV、cloud用FLAC、local用チャンクを保持する。
   監査・再開用checkpointは常に保持する
-- `--allow-cloud-upload`: この実行だけAzure uploadを承認する。設定fileからは読まない
+- `--allow-cloud-upload`: Azure への音声送信を、この実行に限って承認する。接続先などは設定ファイルから読むが、送信承認は設定ファイルに保存できない。実際にクラウド処理を進める際は、コマンドにこのオプションを指定する
 
 選択modeが`local`の場合、設定した既知model（`tiny`、`base`、`small`、`medium`、`large-v3`）がなければ、音声処理前に自動ダウンロードします。
 `--dry-run`ではダウンロードしません。
@@ -338,6 +339,33 @@ tkn-audio-transcriber status --state-dir "D:\transcription-state"
 heartbeatは既定60秒です。
 `--heartbeat-seconds`または設定fileで変更できます。
 これは長いASR処理が生存していることを示しますが、ASRの強制timeoutではありません。
+
+### `prepare`
+
+`transcribe` → `phrases suggest` を一括で実行します。[生成AIの接続設定](#phrases-suggest)を用意してから実行してください。
+
+```powershell
+tkn-audio-transcriber --profile cloud/azure-ja prepare "C:\path\to\meeting.m4a" `
+  --output-dir "C:\path\to\meeting-review" `
+  --allow-cloud-upload
+```
+
+指定先の `transcript/` に文字起こしの4種類の成果物、`vocabulary/` に `phrases.txt`、`review.md`、`candidates.json`、`manifest.json` を保存し、用語確認の段階で停止します。`--output-dir` は必須です。ローカル認識でも利用できます。
+
+`transcribe` と同じ認識オプションに加え、`--generation-profile`、`--context-file`、`--max-candidates` を指定できます。既存の設定や `--phrase-file` の用語は初回の認識にも適用されます。
+
+`--dry-run` では通信・保存・モデル取得を行わず、両工程の設定を検査します。生成AIの入力トークン数・費用はこの段階では見積もりません。保存済みJSONLの見積もりは `phrases suggest --dry-run` で確認できます。`--json` では両工程の結果をまとめたJSONを出力します。
+
+候補生成だけが失敗した場合は、同じコマンドを再実行すると、音声・設定・成果物が変わっていない完成済みの文字起こしを再利用します。`vocabulary/` が既に存在する場合は、確認・編集した用語を守るため実行前に停止します。作り直す場合は新しい出力先を指定してください。
+
+`vocabulary/phrases.txt` を確認・修正した後、再文字起こしは明示的に実行します。
+
+```powershell
+tkn-audio-transcriber --profile cloud/azure-ja transcribe "C:\path\to\meeting.m4a" `
+  --phrase-file "C:\path\to\meeting-review\vocabulary\phrases.txt" `
+  --output-dir "C:\path\to\meeting-refined" `
+  --allow-cloud-upload
+```
 
 ### `phrases suggest`
 

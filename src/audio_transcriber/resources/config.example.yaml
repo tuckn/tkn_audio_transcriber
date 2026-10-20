@@ -1,5 +1,18 @@
 schema_version: "3.1.0"
 
+folders:
+  output: .
+  local_models: ~/.cache/audio_transcriber/models
+  huggingface_cache: ~/.cache/audio_transcriber/huggingface
+  state: ~/.tkn/audio_transcriber/state
+
+processing:
+  ffmpeg:
+    executable: ffmpeg
+    timeout_seconds: 3600
+  heartbeat_seconds: 60
+  keep_working_files: false
+
 transcription:
   active:
     mode: local
@@ -70,16 +83,3 @@ generation:
     codex:
       bridge_profile: codex-default
   max_candidates: 30
-
-folders:
-  output: .
-  local_models: ~/.cache/audio_transcriber/models
-  huggingface_cache: ~/.cache/audio_transcriber/huggingface
-  state: ~/.tkn/audio_transcriber/state
-
-processing:
-  ffmpeg:
-    executable: ffmpeg
-    timeout_seconds: 3600
-  heartbeat_seconds: 60
-  keep_working_files: false
