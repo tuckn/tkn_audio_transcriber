@@ -91,7 +91,10 @@ def test_prepare_produces_transcript_and_review_then_stops(
     assert result["status"] == "review_required"
     assert result["stop_after"] == "phrase_review"
     assert result["transcription"]["status"] == "created"
-    assert len(list((tmp_path / "run/transcript").iterdir())) == 4
+    media = Path(result["transcription"]["outputs"]["audio"]).parent
+    assert media.parent == tmp_path / "run/transcript"
+    assert len(list(media.iterdir())) == 5
+    assert (media / "audio.flac").is_file()
     assert len(list((tmp_path / "run/vocabulary").iterdir())) == 4
     assert len(workflow["azure"]) == len(workflow["generation"]) == 1
     assert "Azure text" in workflow["generation"][0].prompt

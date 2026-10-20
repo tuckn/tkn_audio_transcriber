@@ -3,9 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
+
+from .errors import ValidationError
 
 
 def sha256_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
@@ -54,3 +57,28 @@ def read_json(path: Path) -> dict[str, Any]:
         raise ValueError(f"Expected a JSON object: {path}")
     return value
 
+
+
+def atomic_copy_file(
+    source: Path, destination: Path, *, expected_hash: str, replace: bool = True,
+) -> None:
+    """Stream a large artifact into a temporary file on the destination volume."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as target, source.open("rb") as incoming:
+            shutil.copyfileobj(incoming, target, length=1024 * 1024)
+            target.flush()
+            os.fsync(target.fileno())
+        if sha256_file(temporary) != expected_hash:
+            raise ValidationError("Copied audio hash does not match transcription audio")
+        if replace:
+            os.replace(temporary, destination)
+        elif os.name == "nt":
+            # Windows rename fails if another process has already published this file.
+            os.rename(temporary, destination)
+        else:
+            os.link(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)

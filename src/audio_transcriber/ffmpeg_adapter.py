@@ -68,7 +68,7 @@ class FfmpegAdapter:
             raise ExternalProcessError("ffmpeg did not create a normalized audio file")
 
     def encode_flac(self, normalized: Path, destination: Path) -> None:
-        """Losslessly encode the validated PCM WAV for cloud upload."""
+        """Losslessly encode the validated PCM WAV for archival and cloud upload."""
         destination.parent.mkdir(parents=True, exist_ok=True)
         self._run(
             [

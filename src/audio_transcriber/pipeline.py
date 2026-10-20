@@ -41,6 +41,7 @@ from .ffmpeg_adapter import FfmpegAdapter
 from .gpu_runtime import validate_cuda_runtime
 from .io_utils import (
     append_jsonl,
+    atomic_copy_file,
     atomic_write_json,
     atomic_write_text,
     read_json,
@@ -51,7 +52,12 @@ from .logging_config import log_success
 from .model_store import ensure_local_model
 from .models import Segment, TranscriptionResult
 from .paths import job_directory, output_paths
-from .validation import MANIFEST_SCHEMA_VERSION, validate_artifact
+from .validation import (
+    AUDIO_CONVERSION,
+    MANIFEST_SCHEMA_VERSION,
+    shared_audio_record,
+    validate_artifact,
+)
 from .whisper_adapter import FasterWhisperAdapter, SpeechRecognizer
 
 RecognizerFactory = Callable[[Path, LocalTranscriptionConfig], SpeechRecognizer]
@@ -394,26 +400,42 @@ class TranscriptionPipeline:
             source_path,
             mode=self.config.active_mode,
             profile=self.config.active_profile,
+            source_hash=source_hash,
+            fingerprint=fingerprint,
         )
+
+        shared_record = shared_audio_record(outputs.audio.parent, source_hash)
 
         if outputs.manifest.exists():
             try:
                 existing_manifest = read_json(outputs.manifest)
             except (OSError, ValueError, json.JSONDecodeError):
                 existing_manifest = {}
-            if existing_manifest.get("fingerprint") == fingerprint:
-                validate_artifact(outputs.manifest, verify_source=True)
-                segment_count = int(existing_manifest.get("segment_count", 0))
-                log_success(self.logger, "Outputs are unchanged and valid")
-                return TranscriptionResult(
-                    status="unchanged",
-                    source=source_path,
-                    fingerprint=fingerprint,
-                    outputs=outputs,
-                    segment_count=segment_count,
-                )
+            existing_fingerprint = existing_manifest.get("fingerprint")
+            if existing_fingerprint and existing_fingerprint != fingerprint:
+                raise ValidationError("Transcript identifier collision; choose a new --output-dir")
+            if existing_fingerprint == fingerprint:
+                try:
+                    # The current source was already hashed. Its original path may have moved.
+                    validate_artifact(outputs.manifest, verify_source=False)
+                except ValidationError:
+                    if not overwrite:
+                        raise ValidationError(
+                            "Outputs were modified or are incomplete; use --overwrite to repair "
+                            "this transcript. Shared audio cannot be overwritten."
+                        ) from None
+                else:
+                    segment_count = int(existing_manifest.get("segment_count", 0))
+                    log_success(self.logger, "Outputs are unchanged and valid")
+                    return TranscriptionResult(
+                        status="unchanged", source=source_path, fingerprint=fingerprint,
+                        outputs=outputs, segment_count=segment_count,
+                    )
 
-        existing_outputs = [path for path in outputs.as_dict().values() if Path(path).exists()]
+        existing_outputs = [
+            str(path) for path in (outputs.markdown, outputs.srt, outputs.jsonl, outputs.manifest)
+            if path.exists()
+        ]
         if existing_outputs and not overwrite:
             joined = ", ".join(existing_outputs)
             raise ValidationError(
@@ -487,6 +509,45 @@ class TranscriptionPipeline:
                 self.logger.info("Normalizing audio to mono 16 kHz WAV")
                 self.ffmpeg.normalize(source_path, normalized)
             normalized_info = inspect_normalized_wav(normalized)
+            if isinstance(transcription, AzureSpeechTranscriptionConfig):
+                validate_azure_audio_duration(normalized_info)
+            progress = read_json(progress_path) if progress_path.exists() else {}
+            completed_audio_hash = (
+                progress.get("audio_sha256") if progress.get("azure_request_completed") else None
+            )
+            reusable_checkpoint_audio = (
+                isinstance(completed_audio_hash, str)
+                and cloud_audio.is_file()
+                and sha256_file(cloud_audio) == completed_audio_hash
+            )
+            if not reusable_checkpoint_audio:
+                ensure_free_space(
+                    state_dir,
+                    required_derived_audio_space_bytes(normalized.stat().st_size),
+                    stage="whole-audio FLAC preparation",
+                )
+                tracker.set_stage("encoding-flac")
+                if (
+                    isinstance(transcription, AzureSpeechTranscriptionConfig)
+                    and shared_record is not None and outputs.audio.is_file()
+                ):
+                    self.logger.info("Reusing verified whole-audio FLAC")
+                    atomic_copy_file(
+                        outputs.audio, cloud_audio, expected_hash=shared_record["sha256"]
+                    )
+                else:
+                    self.logger.info("Losslessly encoding whole normalized audio to FLAC")
+                    tracker.run_with_heartbeat(
+                        partial(self.ffmpeg.encode_flac, normalized, cloud_audio)
+                    )
+            audio_hash = sha256_file(cloud_audio)
+            audio_size = cloud_audio.stat().st_size
+            if completed_audio_hash is not None and audio_hash != completed_audio_hash:
+                raise ValidationError("FLAC differs from the completed Azure request checkpoint")
+            if shared_record is not None and (
+                audio_hash != shared_record["sha256"] or audio_size != shared_record["size"]
+            ):
+                raise ValidationError("Regenerated FLAC differs from existing shared audio")
             attempts = 0
             retries = 0
             request_id: str | None = None
@@ -586,17 +647,6 @@ class TranscriptionPipeline:
                     )
                     self.logger.info("Resuming from completed Azure Speech response checkpoint")
                 else:
-                    ensure_free_space(
-                        state_dir,
-                        required_derived_audio_space_bytes(normalized.stat().st_size),
-                        stage="FLAC encoding",
-                    )
-                    tracker.set_stage("encoding-flac")
-                    self.logger.info("Losslessly encoding normalized audio to FLAC")
-                    # Always regenerate: an interrupted encoding may leave a partial file.
-                    tracker.run_with_heartbeat(
-                        partial(self.ffmpeg.encode_flac, normalized, cloud_audio)
-                    )
                     validate_azure_upload_limits(cloud_audio, normalized_info)
                     self.logger.info(
                         "FLAC upload ready: wav_bytes=%d, flac_bytes=%d",
@@ -623,6 +673,8 @@ class TranscriptionPipeline:
                         {
                             "schema_version": 1,
                             "azure_request_completed": True,
+                            "audio_sha256": audio_hash,
+                            "audio_size": audio_size,
                             "authentication_method": authentication_method,
                             "segment_count": len(segments),
                             "attempts": attempts,
@@ -667,8 +719,15 @@ class TranscriptionPipeline:
                     "Source media changed during transcription; outputs were not committed"
                 )
 
+            if sha256_file(cloud_audio) != audio_hash:
+                raise ValidationError("Working FLAC changed during transcription")
             tracker.set_stage("committing")
-            output_dir.mkdir(parents=True, exist_ok=True)
+            ensure_free_space(
+                outputs.audio.parent,
+                required_derived_audio_space_bytes(audio_size),
+                stage="final audio and transcripts",
+            )
+            outputs.audio.parent.mkdir(parents=True, exist_ok=True)
             pending_markdown = outputs.markdown.with_name(f".{outputs.markdown.name}.pending")
             pending_srt = outputs.srt.with_name(f".{outputs.srt.name}.pending")
             pending_jsonl = outputs.jsonl.with_name(f".{outputs.jsonl.name}.pending")
@@ -680,6 +739,24 @@ class TranscriptionPipeline:
             if "## Transcript" not in pending_markdown.read_text(encoding="utf-8"):
                 raise ValidationError("Generated Markdown is invalid")
 
+            # Shared audio is immutable: another profile must never replace it.
+            latest_audio = shared_audio_record(outputs.audio.parent, source_hash)
+            if latest_audio is not None and (
+                latest_audio["sha256"] != audio_hash or latest_audio["size"] != audio_size
+            ):
+                raise ValidationError("Shared audio differs; choose a new --output-dir")
+            if outputs.audio.exists():
+                if sha256_file(outputs.audio) != audio_hash:
+                    raise ValidationError("Shared audio differs; it will not be overwritten")
+            else:
+                # Another run may publish first; verify its bytes below either way.
+                with suppress(FileExistsError):
+                    atomic_copy_file(
+                        cloud_audio, outputs.audio, expected_hash=audio_hash, replace=False
+                    )
+            if sha256_file(outputs.audio) != audio_hash:
+                raise ValidationError("Saved FLAC hash does not match transcription audio")
+
             for pending, final in (
                 (pending_markdown, outputs.markdown),
                 (pending_srt, outputs.srt),
@@ -690,11 +767,12 @@ class TranscriptionPipeline:
             completed_at = datetime.now().astimezone().isoformat(timespec="seconds")
             output_records = {
                 label: {
-                    "path": str(path),
+                    "path": path.name,
                     "size": path.stat().st_size,
                     "sha256": sha256_file(path),
                 }
                 for label, path in (
+                    ("audio", outputs.audio),
                     ("markdown", outputs.markdown),
                     ("srt", outputs.srt),
                     ("jsonl", outputs.jsonl),
@@ -772,6 +850,7 @@ class TranscriptionPipeline:
                     "provenance": provenance,
                     "source": source_record,
                     "decoded_audio": decoded_audio,
+                    "audio_conversion": AUDIO_CONVERSION,
                     "model": {
                         "requested": model_requested,
                         "resolved_path": str(model_path) if model_path is not None else None,

@@ -222,9 +222,8 @@ def test_reviewed_phrase_changes_submit_again_and_keep_first_outputs(tmp_path: P
     original = first.outputs.jsonl.read_bytes()
     assert run("first").status == "unchanged"
     terms.write_text("Corrected Name\n", encoding="utf-8")
-    with pytest.raises(ValidationError, match="already exists"):
-        run("first")
-    second = run("second")
+    second = run("first")
+    assert first.outputs.audio == second.outputs.audio
     assert seen == [("Initial Name",), ("Corrected Name",)]
     assert first.fingerprint != second.fingerprint
     assert first.outputs.jsonl.read_bytes() == original
@@ -264,7 +263,9 @@ def test_dry_run_accepts_mp4_source(tmp_path: Path) -> None:
 
     assert result.status == "planned"
     assert result.source == source.resolve()
-    assert result.outputs.markdown.name == "town-hall__local__local-small_transcript.md"
+    assert result.outputs.markdown.name == (
+        f"transcript__local__local-small__{result.fingerprint[:12]}.md"
+    )
 
 
 def test_transcribe_ensures_missing_model_before_audio_processing(
@@ -400,7 +401,7 @@ def test_end_to_end_commit_validate_unchanged_and_source_immutability(
     assert body.startswith("\n\n# 会議 Transcript\n\n## Transcript\n\n")
     assert "- Source:" not in markdown
     manifest = json.loads(result.outputs.manifest.read_text(encoding="utf-8"))
-    assert manifest["schema_version"] == 3
+    assert manifest["schema_version"] == 4
     assert manifest["provenance"]["profile"] == "local/local-small"
     assert manifest["decoded_audio"]["duration_seconds"] == 20.0
     legacy_manifest = dict(manifest)
@@ -484,7 +485,7 @@ def test_local_segments_outside_chunk_boundaries_are_adjusted(tmp_path: Path) ->
     }
 
 
-def test_different_existing_output_requires_overwrite(tmp_path: Path) -> None:
+def test_changed_source_creates_a_separate_media_folder(tmp_path: Path) -> None:
     source = tmp_path / "meeting.wav"
     source.write_bytes(b"source one")
     config = make_config(tmp_path)
@@ -494,12 +495,13 @@ def test_different_existing_output_requires_overwrite(tmp_path: Path) -> None:
         ffmpeg=FakeFfmpeg([]),  # type: ignore[arg-type]
         recognizer_factory=lambda model, cfg: FakeRecognizer([]),
     )
-    make().transcribe(source, dry_run=False, overwrite=False)
+    first = make().transcribe(source, dry_run=False, overwrite=False)
+    before = first.outputs.markdown.read_bytes()
     source.write_bytes(b"source two")
-    with pytest.raises(ValidationError, match="--overwrite"):
-        make().transcribe(source, dry_run=False, overwrite=False)
-    replaced = make().transcribe(source, dry_run=False, overwrite=True)
-    assert replaced.status == "replaced"
+    second = make().transcribe(source, dry_run=False, overwrite=False)
+    assert second.status == "created"
+    assert second.outputs.audio.parent != first.outputs.audio.parent
+    assert first.outputs.markdown.read_bytes() == before
 
 
 def test_different_profiles_create_distinct_outputs_without_overwrite(tmp_path: Path) -> None:
@@ -522,8 +524,12 @@ def test_different_profiles_create_distinct_outputs_without_overwrite(tmp_path: 
     assert first.status == "created"
     assert second.status == "created"
     assert first.fingerprint != second.fingerprint
-    assert first.outputs.markdown.name == "meeting__local__local-small_transcript.md"
-    assert second.outputs.markdown.name == "meeting__local__local-large_transcript.md"
+    assert first.outputs.markdown.name == (
+        f"transcript__local__local-small__{first.fingerprint[:12]}.md"
+    )
+    assert second.outputs.markdown.name == (
+        f"transcript__local__local-large__{second.fingerprint[:12]}.md"
+    )
     assert first.outputs.markdown.is_file()
     assert second.outputs.markdown.is_file()
     first_manifest = json.loads(first.outputs.manifest.read_text(encoding="utf-8"))
@@ -648,7 +654,7 @@ def test_azure_whole_file_flow_preserves_speakers_and_provenance(
     jsonl = json.loads(result.outputs.jsonl.read_text(encoding="utf-8"))
     assert jsonl["speaker"] == "1"
     manifest = json.loads(result.outputs.manifest.read_text(encoding="utf-8"))
-    assert manifest["schema_version"] == 3
+    assert manifest["schema_version"] == 4
     assert manifest["provider"] == "azure-speech-fast"
     assert manifest["provenance"] == {
         "mode": "cloud",

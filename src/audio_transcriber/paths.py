@@ -16,16 +16,34 @@ def safe_profile_component(value: str) -> str:
     return component or "profile"
 
 
-def output_paths(output_dir: Path, source: Path, *, mode: str, profile: str) -> OutputPaths:
+def media_stem(source: Path) -> str:
+    # Keep Unicode and spaces, but make the component portable to Windows.
+    value = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", source.stem).strip(" .")
+    device = value.split(".")[0].upper()
+    if device in {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} or re.fullmatch(
+        r"(?:COM|LPT)[1-9¹²³]", device
+    ):
+        value = "_" + value
+    # Leave space for the hash suffix and transcript filenames on Windows.
+    shortened = value.encode("utf-16-le")[:120].decode("utf-16-le", errors="ignore")
+    return shortened.rstrip(" .") or "audio"
+
+
+def output_paths(
+    output_dir: Path, source: Path, *, mode: str, profile: str,
+    source_hash: str, fingerprint: str,
+) -> OutputPaths:
+    directory = output_dir / f"{media_stem(source)}__{source_hash[:12]}"
     stem = (
-        f"{safe_stem(source)}__{safe_profile_component(mode)}__"
-        f"{safe_profile_component(profile)}_transcript"
+        f"transcript__{safe_profile_component(mode)}__"
+        f"{safe_profile_component(profile)[:40]}__{fingerprint[:12]}"
     )
     return OutputPaths(
-        markdown=output_dir / f"{stem}.md",
-        srt=output_dir / f"{stem}.srt",
-        jsonl=output_dir / f"{stem}.jsonl",
-        manifest=output_dir / f"{stem}.manifest.json",
+        audio=directory / "audio.flac",
+        markdown=directory / f"{stem}.md",
+        srt=directory / f"{stem}.srt",
+        jsonl=directory / f"{stem}.jsonl",
+        manifest=directory / f"{stem}.manifest.json",
     )
 
 

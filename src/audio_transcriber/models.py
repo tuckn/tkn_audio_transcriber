@@ -23,6 +23,7 @@ class Segment:
 
 @dataclass(frozen=True)
 class OutputPaths:
+    audio: Path
     markdown: Path
     srt: Path
     jsonl: Path
@@ -30,6 +31,7 @@ class OutputPaths:
 
     def as_dict(self) -> dict[str, str]:
         return {
+            "audio": str(self.audio),
             "markdown": str(self.markdown),
             "srt": str(self.srt),
             "jsonl": str(self.jsonl),

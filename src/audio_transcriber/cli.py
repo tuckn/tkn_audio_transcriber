@@ -139,7 +139,7 @@ def _parser() -> argparse.ArgumentParser:
         "--keep-working-files",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Keep normalized WAV, cloud FLAC, and local chunks after successful verification.",
+        help="Keep working WAV/FLAC and chunks; final audio.flac is always retained.",
     )
     transcribe.add_argument(
         "--azure-speech-endpoint",
@@ -201,10 +201,13 @@ def _parser() -> argparse.ArgumentParser:
         "transcribe", parents=[transcribe],
         help="Normalize, split, transcribe, verify, and commit outputs.",
     )
-    transcribe_command.add_argument("--output-dir", type=Path, help="Transcript output directory.")
+    transcribe_command.add_argument(
+        "--output-dir", type=Path,
+        help="Output root; creates one source-name/hash folder with audio.flac and transcripts.",
+    )
     transcribe_command.add_argument(
         "--overwrite", action="store_true",
-        help="Replace existing differing or incomplete outputs after successful processing.",
+        help="Repair this transcript after processing; shared audio is never overwritten.",
     )
     prepare = commands.add_parser(
         "prepare", parents=[transcribe],

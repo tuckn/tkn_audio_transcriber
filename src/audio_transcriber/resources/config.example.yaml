@@ -1,6 +1,7 @@
 schema_version: "3.1.0"
 
 folders:
+  # Root for source-name/hash folders containing audio.flac and transcripts.
   output: .
   local_models: ~/.cache/audio_transcriber/models
   huggingface_cache: ~/.cache/audio_transcriber/huggingface
@@ -11,6 +12,7 @@ processing:
     executable: ffmpeg
     timeout_seconds: 3600
   heartbeat_seconds: 60
+  # Final audio.flac is always retained, independently of working files.
   keep_working_files: false
 
 transcription:

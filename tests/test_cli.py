@@ -37,6 +37,7 @@ def test_transcribe_prints_copyable_paths_by_default(
     monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
     source = tmp_path / "source.wav"
     outputs = OutputPaths(
+        audio=tmp_path / "audio.flac",
         markdown=tmp_path / "meeting_transcript.md",
         srt=tmp_path / "meeting_transcript.srt",
         jsonl=tmp_path / "meeting_transcript.jsonl",
@@ -63,6 +64,7 @@ def test_transcribe_prints_copyable_paths_by_default(
         "fingerprint: abc123",
         "segment_count: 402",
         "outputs:",
+        f"  audio: {outputs.audio}",
         f"  markdown: {outputs.markdown}",
         f"  srt: {outputs.srt}",
         f"  jsonl: {outputs.jsonl}",
@@ -86,9 +88,8 @@ def test_transcribe_dry_run_prints_plan_as_text(
 
     captured = capsys.readouterr()  # type: ignore[attr-defined]
     assert captured.out.startswith(f"status: planned\nsource: {source}\n")
-    assert f"  markdown: {tmp_path / 'audio__local__local-small_transcript.md'}\n" in (
-        captured.out
-    )
+    assert "transcript__local__local-small__" in captured.out
+    assert "audio.flac" in captured.out
     assert "plan:\n  mode: local\n  profile: local/local-small\n" in captured.out
     assert "  network_calls: 0\n" in captured.out
     assert f"[INFO] Hashing source media: {source}" in captured.err
@@ -361,8 +362,10 @@ def test_transcribe_dry_run_defaults_output_to_current_working_directory(
     captured = capsys.readouterr()  # type: ignore[attr-defined]
     payload = json.loads(captured.out)
     assert payload["status"] == "planned"
-    assert Path(payload["outputs"]["markdown"]).parent == tmp_path.resolve()
-    assert payload["outputs"]["markdown"].endswith("audio__local__local-small_transcript.md")
+    assert Path(payload["outputs"]["markdown"]).parent.parent == tmp_path.resolve()
+    assert Path(payload["outputs"]["markdown"]).name == (
+        f"transcript__local__local-small__{payload['fingerprint'][:12]}.md"
+    )
     assert payload["plan"]["provider"] == "faster-whisper"
 
 
@@ -389,7 +392,9 @@ def test_profile_switches_transcription_model_for_dry_run(
     assert payload["plan"]["mode"] == "local"
     assert payload["plan"]["profile"] == "local/local-large"
     assert payload["plan"]["provider"] == "faster-whisper"
-    assert payload["outputs"]["markdown"].endswith("audio__local__local-large_transcript.md")
+    assert Path(payload["outputs"]["markdown"]).name == (
+        f"transcript__local__local-large__{payload['fingerprint'][:12]}.md"
+    )
 
 
 def test_cuda_preflight_failure_is_an_actionable_cli_error(
