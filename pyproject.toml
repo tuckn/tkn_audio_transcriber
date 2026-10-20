@@ -11,6 +11,8 @@ license = { file = "LICENSE" }
 requires-python = ">=3.12"
 authors = [{ name = "Tuckn" }]
 dependencies = [
+  # faster-whisper passes av.open(metadata_errors=...), which PyAV 19 removed.
+  "av<19",
   "azure-identity>=1.25.0,<2",
   "faster-whisper>=1.1.0,<2",
   "huggingface-hub>=0.30.0,<2",
