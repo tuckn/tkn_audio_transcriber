@@ -39,7 +39,7 @@ def test_unicode_full_audio_retained_after_cleanup_and_folder_move(tmp_path: Pat
     source = tmp_path / "会議 その1.mp4"
     source.write_bytes(b"source")
     result = run(tmp_path, source)
-    assert result.outputs.audio.parent.name == f"会議 その1__{sha256_file(source)[:12]}"
+    assert result.outputs.audio.parent.name == f"会議 その1_{sha256_file(source)[:12]}"
     assert result.outputs.audio.name == "audio.flac"
     assert len(list(result.outputs.audio.parent.iterdir())) == 5
     manifest = json.loads(result.outputs.manifest.read_text(encoding="utf-8"))
@@ -158,8 +158,8 @@ def test_long_unicode_and_reserved_stems_are_safe(tmp_path: Path, name: str) -> 
     )
     assert len(paths.audio.parent.name.encode("utf-16-le")) <= 148
     assert paths.audio.parent.parent == tmp_path
-    assert paths.audio.parent.name.endswith("__aaaaaaaaaaaa")
-    assert paths.markdown.name == "transcript__local__local-small__bbbbbbbbbbbb.md"
+    assert paths.audio.parent.name.endswith("_aaaaaaaaaaaa")
+    assert paths.markdown.name == "transcript_local_local-small_bbbbbbbbbbbb.md"
 
 
 def test_copy_verifies_before_publish_and_never_replaces_shared_file(tmp_path: Path) -> None:

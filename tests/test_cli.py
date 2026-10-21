@@ -88,7 +88,7 @@ def test_transcribe_dry_run_prints_plan_as_text(
 
     captured = capsys.readouterr()  # type: ignore[attr-defined]
     assert captured.out.startswith(f"status: planned\nsource: {source}\n")
-    assert "transcript__local__local-small__" in captured.out
+    assert "transcript_local_local-small_" in captured.out
     assert "audio.flac" in captured.out
     assert "plan:\n  mode: local\n  profile: local/local-small\n" in captured.out
     assert "  network_calls: 0\n" in captured.out
@@ -364,7 +364,7 @@ def test_transcribe_dry_run_defaults_output_to_current_working_directory(
     assert payload["status"] == "planned"
     assert Path(payload["outputs"]["markdown"]).parent.parent == tmp_path.resolve()
     assert Path(payload["outputs"]["markdown"]).name == (
-        f"transcript__local__local-small__{payload['fingerprint'][:12]}.md"
+        f"transcript_local_local-small_{payload['fingerprint'][:12]}.md"
     )
     assert payload["plan"]["provider"] == "faster-whisper"
 
@@ -393,7 +393,7 @@ def test_profile_switches_transcription_model_for_dry_run(
     assert payload["plan"]["profile"] == "local/local-large"
     assert payload["plan"]["provider"] == "faster-whisper"
     assert Path(payload["outputs"]["markdown"]).name == (
-        f"transcript__local__local-large__{payload['fingerprint'][:12]}.md"
+        f"transcript_local_local-large_{payload['fingerprint'][:12]}.md"
     )
 
 

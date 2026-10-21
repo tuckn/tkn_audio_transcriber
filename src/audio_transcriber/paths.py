@@ -33,10 +33,10 @@ def output_paths(
     output_dir: Path, source: Path, *, mode: str, profile: str,
     source_hash: str, fingerprint: str,
 ) -> OutputPaths:
-    directory = output_dir / f"{media_stem(source)}__{source_hash[:12]}"
+    directory = output_dir / f"{media_stem(source)}_{source_hash[:12]}"
     stem = (
-        f"transcript__{safe_profile_component(mode)}__"
-        f"{safe_profile_component(profile)[:40]}__{fingerprint[:12]}"
+        f"transcript_{safe_profile_component(mode)}_"
+        f"{safe_profile_component(profile)[:40]}_{fingerprint[:12]}"
     )
     return OutputPaths(
         audio=directory / "audio.flac",

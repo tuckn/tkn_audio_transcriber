@@ -2,7 +2,7 @@
 
 音声ファイルや動画の音声を、時刻付きの Markdown 文字起こし、SRT 字幕、JSONL データに変換する CLI です。音声認識には、PC 上の `faster-whisper` または Azure Speech Fast Transcription を選べます。元のメディアは変更しません。
 
-例えば `meeting.flac` を処理すると、主成果物 `meeting__<音声ID>/transcript__local__local-small__<生成ID>.md` に次のような本文ができます。これは形式を示す架空の抜粋です。
+例えば `meeting.flac` を処理すると、主成果物 `meeting_<音声ID>/transcript_local_local-small_<生成ID>.md` に次のような本文ができます。これは形式を示す架空の抜粋です。
 
 ```text
 # meeting Transcript
@@ -73,7 +73,7 @@ uv tool install .
 tkn-audio-transcriber --version
 ```
 
-`tkn-audio-transcriber 0.13.0` のようにパッケージのバージョンが表示されれば導入できています。コマンドとオプションは `tkn-audio-transcriber --help`、各コマンドの詳細は `tkn-audio-transcriber transcribe --help` などで確認できます。
+`tkn-audio-transcriber 0.13.1` のようにパッケージのバージョンが表示されれば導入できています。コマンドとオプションは `tkn-audio-transcriber --help`、各コマンドの詳細は `tkn-audio-transcriber transcribe --help` などで確認できます。
 
 ソースを更新した後は、同じフォルダで `uv tool install . --reinstall` を実行してください。
 
@@ -123,12 +123,12 @@ tkn-audio-transcriber transcribe "C:\path\to\meeting.flac" --output-dir "C:\path
 tkn-audio-transcriber transcribe "C:\path\to\meeting.flac" --output-dir "C:\path\to\transcripts"
 ```
 
-標準出力の `status: created` と `outputs:` 以下のパスを確認し、`markdown:` に表示された `transcript__*.md` を開きます。本文には時刻付きの認識結果が入り、全編の `audio.flac`、SRT 字幕、JSONL データ、検証用 manifest も同じメディア用フォルダに作られます。文字起こしの正確さは自動検証の対象外なので、重要な固有名詞、日時、否定表現は原音と照合してください。
+標準出力の `status: created` と `outputs:` 以下のパスを確認し、`markdown:` に表示された `transcript_*.md` を開きます。本文には時刻付きの認識結果が入り、全編の `audio.flac`、SRT 字幕、JSONL データ、検証用 manifest も同じメディア用フォルダに作られます。文字起こしの正確さは自動検証の対象外なので、重要な固有名詞、日時、否定表現は原音と照合してください。
 
 成果物のサイズと SHA-256 を検査する場合は、表示された manifest のパスを指定します。
 
 ```powershell
-tkn-audio-transcriber validate "C:\path\to\transcripts\meeting__0123456789ab\transcript__local__local-small__abcdef012345.manifest.json"
+tkn-audio-transcriber validate "C:\path\to\transcripts\meeting_0123456789ab\transcript_local_local-small_abcdef012345.manifest.json"
 ```
 
 ## 再実行と日常の操作
@@ -161,12 +161,12 @@ tkn-audio-transcriber status
 
 ```text
 transcripts/
-  meeting__0123456789ab/
+  meeting_0123456789ab/
     audio.flac
-    transcript__local__local-small__abcdef012345.md
-    transcript__local__local-small__abcdef012345.srt
-    transcript__local__local-small__abcdef012345.jsonl
-    transcript__local__local-small__abcdef012345.manifest.json
+    transcript_local_local-small_abcdef012345.md
+    transcript_local_local-small_abcdef012345.srt
+    transcript_local_local-small_abcdef012345.jsonl
+    transcript_local_local-small_abcdef012345.manifest.json
 ```
 
 - フォルダの音声IDは元メディアの内容で決まります。同名でも内容が違えば別フォルダです。同名・同内容なら入力の置き場所を変えても同じ保存先を使います。元ファイルを改名すると別フォルダになります。
@@ -188,10 +188,10 @@ transcripts/
 | ファイル | 使い方 |
 | --- | --- |
 | `audio.flac` | 全編の正規化音声。原音照合・再利用用。全プロファイルで共有 |
-| `transcript__*.md` | 時刻付き本文を読む主成果物。Frontmatter に入力名、プロファイル、モデル、言語、ツールのバージョンなどを記録 |
-| `transcript__*.srt` | 再生ソフトや動画編集ソフトで使う字幕。Azure で話者情報が返された場合はラベルを含む |
-| `transcript__*.jsonl` | 1 行 1 JSON オブジェクトの区間データ。後続の処理に使う |
-| `transcript__*.manifest.json` | 入力ハッシュ、設定、実行情報、出力ハッシュを記録する検証用ファイル。`validate` の入力に使う |
+| `transcript_*.md` | 時刻付き本文を読む主成果物。Frontmatter に入力名、プロファイル、モデル、言語、ツールのバージョンなどを記録 |
+| `transcript_*.srt` | 再生ソフトや動画編集ソフトで使う字幕。Azure で話者情報が返された場合はラベルを含む |
+| `transcript_*.jsonl` | 1 行 1 JSON オブジェクトの区間データ。後続の処理に使う |
+| `transcript_*.manifest.json` | 入力ハッシュ、設定、実行情報、出力ハッシュを記録する検証用ファイル。`validate` の入力に使う |
 
 最終成果物の既定の保存先は実行時の作業ディレクトリです。`--output-dir` または `folders.output` で変更できます。設定内の相対パスも作業ディレクトリを基準に解決します。旧版の平坦な出力は自動移動・削除しません。更新後の実行では新構成の成果物を別途作成します。設定schemaは変わらず、既存の `folders.output` を保存先ルートとして使えます。
 
@@ -365,7 +365,7 @@ tkn-audio-transcriber --profile cloud/azure-ja prepare "C:\path\to\meeting.m4a" 
   --allow-cloud-upload
 ```
 
-指定先の `transcript/<元ファイル名>__<音声ID>/` に全編FLACと文字起こし一式、`vocabulary/` に `phrases.txt`、`review.md`、`candidates.json`、`manifest.json` を保存し、用語確認の段階で停止します。`--output-dir` は必須です。ローカル認識でも利用できます。
+指定先の `transcript/<元ファイル名>_<音声ID>/` に全編FLACと文字起こし一式、`vocabulary/` に `phrases.txt`、`review.md`、`candidates.json`、`manifest.json` を保存し、用語確認の段階で停止します。`--output-dir` は必須です。ローカル認識でも利用できます。
 
 `transcribe` と同じ認識オプションに加え、`--generation-profile`、`--context-file`、`--max-candidates` を指定できます。既存の設定や `--phrase-file` の用語は初回の認識にも適用されます。
 
@@ -419,12 +419,12 @@ tkn-audio-transcriber --profile cloud/azure-ja transcribe "C:\path\to\meeting.m4
 
 # 2. 生成内容・接続先・概算tokenを確認（通信・保存なし）
 tkn-audio-transcriber phrases suggest `
-  "C:\path\to\first\meeting__0123456789ab\transcript__cloud__azure-ja__abcdef012345.jsonl" `
+  "C:\path\to\first\meeting_0123456789ab\transcript_cloud_azure-ja_abcdef012345.jsonl" `
   --output-dir "C:\path\to\vocabulary" --dry-run
 
 # 3. 用語候補を生成。vocabulary は未作成のフォルダを指定
 tkn-audio-transcriber phrases suggest `
-  "C:\path\to\first\meeting__0123456789ab\transcript__cloud__azure-ja__abcdef012345.jsonl" `
+  "C:\path\to\first\meeting_0123456789ab\transcript_cloud_azure-ja_abcdef012345.jsonl" `
   --output-dir "C:\path\to\vocabulary"
 
 # 4. review.md を読み、phrases.txt の単語を修正・削除
@@ -462,8 +462,8 @@ manifest schemaと、全出力のfile size・SHA-256を検証します。
 新規実行は音声の変換条件・FLACハッシュと、選択profile・provider・認証・API provenanceを含むmanifest schema 4を書きます。既存schema 1～3のmanifestも引き続き検証できます。
 
 ```powershell
-tkn-audio-transcriber validate "C:\path\to\meeting__0123456789ab\transcript__local__local-small__abcdef012345.manifest.json"
-tkn-audio-transcriber validate "C:\path\to\meeting__0123456789ab\transcript__local__local-small__abcdef012345.manifest.json" `
+tkn-audio-transcriber validate "C:\path\to\meeting_0123456789ab\transcript_local_local-small_abcdef012345.manifest.json"
+tkn-audio-transcriber validate "C:\path\to\meeting_0123456789ab\transcript_local_local-small_abcdef012345.manifest.json" `
   --verify-source
 ```
 

@@ -8,6 +8,13 @@
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-10-21
+
+### Changed
+
+- 成果物名とメディアフォルダ名の項目区切りを `__` から `_` に変更しました。例: `meeting_<音声ID>/transcript_cloud_japanese-meeting_<生成ID>.jsonl`。元ファイル名・プロファイル名に含まれる文字は保持します。
+- 設定schemaとmanifest schemaは変更しません。更新後は `uv tool install . --reinstall` を実行してください。
+
 ## [0.13.0] - 2026-10-21
 
 ### Changed

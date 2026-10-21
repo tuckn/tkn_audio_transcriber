@@ -124,7 +124,7 @@ def validate_artifact(manifest_path: Path, *, verify_source: bool) -> dict[str, 
 def shared_audio_record(directory: Path, source_hash: str) -> dict[str, Any] | None:
     """Check shared audio without requiring other, possibly edited, transcripts to validate."""
     expected: dict[str, Any] | None = None
-    for path in sorted(directory.glob("transcript__*.manifest.json")):
+    for path in sorted(directory.glob("transcript_*.manifest.json")):
         try:
             manifest = read_json(path)
         except (OSError, ValueError) as exc:

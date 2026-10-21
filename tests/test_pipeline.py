@@ -264,7 +264,7 @@ def test_dry_run_accepts_mp4_source(tmp_path: Path) -> None:
     assert result.status == "planned"
     assert result.source == source.resolve()
     assert result.outputs.markdown.name == (
-        f"transcript__local__local-small__{result.fingerprint[:12]}.md"
+        f"transcript_local_local-small_{result.fingerprint[:12]}.md"
     )
 
 
@@ -525,10 +525,10 @@ def test_different_profiles_create_distinct_outputs_without_overwrite(tmp_path: 
     assert second.status == "created"
     assert first.fingerprint != second.fingerprint
     assert first.outputs.markdown.name == (
-        f"transcript__local__local-small__{first.fingerprint[:12]}.md"
+        f"transcript_local_local-small_{first.fingerprint[:12]}.md"
     )
     assert second.outputs.markdown.name == (
-        f"transcript__local__local-large__{second.fingerprint[:12]}.md"
+        f"transcript_local_local-large_{second.fingerprint[:12]}.md"
     )
     assert first.outputs.markdown.is_file()
     assert second.outputs.markdown.is_file()
