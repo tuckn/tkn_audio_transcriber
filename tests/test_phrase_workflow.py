@@ -349,8 +349,7 @@ def test_cli_suggest_json_and_dry_run(
     assert (
         main(
             [
-                "phrases",
-                "suggest",
+                "suggest-phrases",
                 str(transcript),
                 "--output-dir",
                 str(tmp_path / "review"),
@@ -367,8 +366,7 @@ def test_cli_suggest_json_and_dry_run(
     assert (
         main(
             [
-                "phrases",
-                "suggest",
+                "suggest-phrases",
                 str(transcript),
                 "--output-dir",
                 str(tmp_path / "review"),

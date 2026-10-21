@@ -1,4 +1,4 @@
-"""Run transcription and candidate generation, stopping at human review."""
+"""Run transcription and candidate generation, saving files and exiting."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def prepare_transcription(
 ) -> dict[str, Any]:
     root = config.path("output_dir")
     if root is None:
-        raise ValidationError("prepare requires an output directory")
+        raise ValidationError("transcribe --suggest-phrases requires an output directory")
     root = root.expanduser().resolve()
     vocabulary = root / "vocabulary"
     transcript_dir = root / "transcript"
@@ -48,7 +48,7 @@ def prepare_transcription(
     transcript_config = replace(
         config,
         values={**config.values, "output_dir": str(transcript_dir)},
-        sources={**config.sources, "output_dir": "prepare output directory"},
+        sources={**config.sources, "output_dir": "transcribe --suggest-phrases output directory"},
     )
     logger.info("Step 1/2: %s transcription", "Planning" if dry_run else "Running")
     result = TranscriptionPipeline(config=transcript_config, logger=logger).transcribe(
@@ -79,8 +79,9 @@ def prepare_transcription(
     except AudioTranscriberError as exc:
         raise AudioTranscriberError(
             f"Transcription was saved at {result.outputs.jsonl}. "
-            "Phrase generation failed; rerun the same prepare command to reuse the transcript, "
-            f"or use phrases suggest separately. {exc}"
+            "Phrase generation failed; rerun the same transcribe --suggest-phrases command "
+            "to reuse the transcript, "
+            f"or use suggest-phrases separately. {exc}"
         ) from None
     return {
         "status": "review_required",

@@ -227,7 +227,7 @@ def preflight_phrase_generation(
         "transcript_validation": "after_transcription",
         "token_estimate": None, "cost_estimate": None,
         "estimate_reason": (
-            "Transcript estimates are deferred; use phrases suggest --dry-run on saved JSONL"
+            "Transcript estimates are deferred; use suggest-phrases --dry-run on saved JSONL"
         ),
     }
 

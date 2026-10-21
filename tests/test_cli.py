@@ -36,8 +36,8 @@ def test_transcribe_help_describes_audio_and_video(capsys: object) -> None:
         ["config", "profiles"],
         ["model", "download", "small"],
         ["transcribe", "audio.wav"],
-        ["prepare", "audio.wav", "--output-dir", "review"],
-        ["phrases", "suggest", "transcript.jsonl", "--output-dir", "review"],
+        ["transcribe", "--suggest-phrases", "audio.wav", "--output-dir", "review"],
+        ["suggest-phrases", "transcript.jsonl", "--output-dir", "review"],
         ["cleanup"],
         ["status"],
     ],
@@ -52,7 +52,8 @@ def test_config_options_work_after_resolving_commands(command: list[str]) -> Non
 
 def test_profile_before_command_remains_supported() -> None:
     args = _parser().parse_args(
-        ["--profile", "local/local-large", "prepare", "audio.wav", "--output-dir", "review"]
+        ["--profile", "local/local-large", "transcribe", "--suggest-phrases",
+         "audio.wav", "--output-dir", "review"]
     )
     assert args.profile == "local/local-large"
 
@@ -513,3 +514,32 @@ def test_azure_profile_dry_run_does_not_require_upload_approval(
     assert payload["plan"]["normalized_audio_validation"]["status"] == (
         "deferred_until_actual_run"
     )
+
+
+@pytest.mark.parametrize("option", [
+    ["--generation-profile", "codex"],
+    ["--context-file", "context.txt"],
+    ["--max-candidates", "10"],
+])
+def test_generation_options_require_suggest_flag(option: list[str]) -> None:
+    with pytest.raises(SystemExit) as caught:
+        main(["transcribe", "audio.wav", *option])
+    assert caught.value.code == 2
+
+
+@pytest.mark.parametrize("command", ["prepare", "phrases"])
+def test_removed_vocabulary_commands_are_rejected(command: str) -> None:
+    with pytest.raises(SystemExit) as caught:
+        main([command])
+    assert caught.value.code == 2
+
+
+def test_vocabulary_help_uses_consistent_names(capsys: object) -> None:
+    with pytest.raises(SystemExit) as caught:
+        main(["transcribe", "--help"])
+    assert caught.value.code == 0
+    assert "--suggest-phrases" in capsys.readouterr().out  # type: ignore[attr-defined]
+    with pytest.raises(SystemExit) as caught:
+        main(["suggest-phrases", "--help"])
+    assert caught.value.code == 0
+    assert "--generation-profile" in capsys.readouterr().out  # type: ignore[attr-defined]

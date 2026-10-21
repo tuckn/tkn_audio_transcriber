@@ -208,29 +208,31 @@ def _parser() -> argparse.ArgumentParser:
     )
     transcribe_command.add_argument(
         "--output-dir", type=Path,
-        help="Output root; creates one source-name/hash folder with audio.flac and transcripts.",
+        help=("Output root; with --suggest-phrases creates transcript/ and vocabulary/; "
+              "otherwise a source-name/hash folder."),
     )
     transcribe_command.add_argument(
         "--overwrite", action="store_true",
         help="Repair this transcript after processing; shared audio is never overwritten.",
     )
-    prepare = commands.add_parser(
-        "prepare", parents=[transcribe],
-        help="Transcribe audio, suggest vocabulary, then stop for human review.",
+    transcribe_command.add_argument(
+        "--suggest-phrases", action="store_true",
+        help=("Also generate vocabulary files and exit; "
+              "uses configured output root; excludes --overwrite."),
     )
-    prepare.add_argument(
-        "--output-dir", type=Path, required=True,
-        help="Workflow directory containing transcript/ and vocabulary/.",
+    transcribe_command.add_argument(
+        "--generation-profile", help="Generation profile (requires --suggest-phrases)."
     )
-    prepare.add_argument("--generation-profile", help="Application generation profile name.")
-    prepare.add_argument("--context-file", type=Path, help="Optional UTF-8 background text.")
-    prepare.add_argument("--max-candidates", type=int, help="Maximum vocabulary candidates.")
+    transcribe_command.add_argument(
+        "--context-file", type=Path, help="UTF-8 background text (requires --suggest-phrases)."
+    )
+    transcribe_command.add_argument(
+        "--max-candidates", type=int, help="Maximum candidates (requires --suggest-phrases)."
+    )
 
-    phrases = commands.add_parser("phrases", help="Prepare vocabulary for human review.")
-    phrase_commands = phrases.add_subparsers(dest="phrases_command", required=True)
-    suggest = phrase_commands.add_parser(
-        "suggest", parents=[command_options],
-        help="Use GenAI Bridge to propose phrases from transcript JSONL, then stop."
+    suggest = commands.add_parser(
+        "suggest-phrases", parents=[command_options],
+        help="Generate vocabulary files from saved transcript JSONL and exit."
     )
     suggest.add_argument("transcript", type=Path, help="Transcript JSONL produced by this CLI.")
     suggest.add_argument("--output-dir", type=Path, required=True, help="New review directory.")
@@ -374,6 +376,14 @@ def _warn_in_memory_migrations(config: ResolvedConfig, logger: logging.Logger) -
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    if args.command == "transcribe":
+        if args.suggest_phrases:
+            if args.overwrite:
+                parser.error("--suggest-phrases cannot be combined with --overwrite")
+        elif any(value is not None for value in (
+            args.generation_profile, args.context_file, args.max_candidates
+        )):
+            parser.error("Generation options require --suggest-phrases")
     logger = configure_logging(quiet=args.quiet, verbose=args.verbose)
     try:
         if args.command == "config":
@@ -423,7 +433,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
             return 0
-        if args.command in {"transcribe", "prepare"}:
+        if args.command == "transcribe":
             overrides = {
                 "output_dir": _path_value(args.output_dir),
                 "model": args.model,
@@ -452,7 +462,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
             config = _resolve(args, overrides)
             _warn_in_memory_migrations(config, logger)
-            if args.command == "prepare":
+            if args.suggest_phrases:
                 from .prepare import prepare_transcription
 
                 payload = prepare_transcription(
@@ -479,7 +489,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 _text_result(result)
             return 0
-        if args.command == "phrases":
+        if args.command == "suggest-phrases":
             from .phrase_suggestions import suggest_phrases
 
             config = _resolve(args)

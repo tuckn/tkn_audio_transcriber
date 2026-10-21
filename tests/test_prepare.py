@@ -104,7 +104,7 @@ def test_generation_failure_resumes_without_another_audio_submission(
     tmp_path: Path, workflow: dict[str, Any]
 ) -> None:
     workflow["fail_generation"] = True
-    with pytest.raises(AudioTranscriberError, match="rerun the same prepare"):
+    with pytest.raises(AudioTranscriberError, match="rerun the same transcribe --suggest-phrases"):
         run(workflow, allow_cloud_upload=True)
     assert (tmp_path / "run/transcript").is_dir()
     assert not (tmp_path / "run/vocabulary").exists()
@@ -163,17 +163,19 @@ def test_cloud_upload_permission_still_required(workflow: dict[str, Any]) -> Non
     assert not workflow["azure"] and not workflow["generation"]
 
 
+@pytest.mark.parametrize("output_mode", ["cli", "config", "default"])
 def test_prepare_cli_json_and_options(
     tmp_path: Path,
     workflow: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    output_mode: str,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     args = [
-        "prepare",
+        "transcribe", "--suggest-phrases",
         str(workflow["audio"]),
         "--profile",
         "cloud/azure-ja",
@@ -190,7 +192,22 @@ def test_prepare_cli_json_and_options(
         "10",
         "--json",
     ]
+    expected_root = tmp_path / "run"
+    if output_mode != "cli":
+        index = args.index("--output-dir")
+        del args[index:index + 2]
+        if output_mode == "config":
+            config_path = tmp_path / "settings.yaml"
+            config_path.write_text(json.dumps({
+                "schema_version": "3.1.0",
+                "folders": {"output": str(expected_root)},
+            }), encoding="utf-8")
+            args.extend(["--config", str(config_path)])
+        else:
+            expected_root = tmp_path
     assert main(args) == 0
+    assert (expected_root / "vocabulary" / "phrases.txt").is_file()
+    assert list((expected_root / "transcript").rglob("*.jsonl"))
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "review_required"
     assert result["suggestions"]["max_candidates"] == 10
@@ -200,10 +217,9 @@ def test_prepare_cli_json_and_options(
     assert len(workflow["azure"]) == len(workflow["generation"]) == 1
 
 
-def test_prepare_requires_output_and_rejects_overwrite() -> None:
+def test_prepare_rejects_overwrite() -> None:
     for args in (
-        ["prepare", "audio.wav"],
-        ["prepare", "audio.wav", "--output-dir", "run", "--overwrite"],
+        ["transcribe", "--suggest-phrases", "audio.wav", "--output-dir", "run", "--overwrite"],
     ):
         with pytest.raises(SystemExit) as caught:
             main(args)

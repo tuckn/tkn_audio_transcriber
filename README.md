@@ -73,7 +73,7 @@ uv tool install .
 tkn-audio-transcriber --version
 ```
 
-`tkn-audio-transcriber 0.13.1` のようにパッケージのバージョンが表示されれば導入できています。コマンドとオプションは `tkn-audio-transcriber --help`、各コマンドの詳細は `tkn-audio-transcriber transcribe --help` などで確認できます。
+`tkn-audio-transcriber 0.14.1` のようにパッケージのバージョンが表示されれば導入できています。コマンドとオプションは `tkn-audio-transcriber --help`、各コマンドの詳細は `tkn-audio-transcriber transcribe --help` などで確認できます。
 
 ソースを更新した後は、同じフォルダで `uv tool install . --reinstall` を実行してください。
 
@@ -150,8 +150,8 @@ tkn-audio-transcriber status
 | 旧設定を移す | [`config migrate`](#config-migrate) | 旧スキーマを検証し、バックアップ後に更新する |
 | モデルを事前取得する | [`model download`](#model-download) | ローカル認識モデルをダウンロードする |
 | 文字起こしを作る | [`transcribe`](#transcribe) | 全編 FLAC と文字起こし一式を作る |
-| 文字起こしと用語候補を一括作成する | [`prepare`](#prepare) | 初回の文字起こしから用語候補生成まで実行し、人による確認で止める |
-| 用語候補を作る | [`phrases suggest`](#phrases-suggest) | 文字起こしから候補を生成し、人による確認・修正でいったん止める |
+| 文字起こしと用語候補を一括作成する | [`transcribe --suggest-phrases`](#transcribe---suggest-phrases) | 初回の文字起こしと用語候補ファイルの生成を一括実行する |
+| 用語候補を作る | [`suggest-phrases`](#suggest-phrases) | 保存済みの文字起こしから用語候補ファイルを生成する |
 | 状況・成果物を調べる | [`status`](#status)、[`validate`](#validate) | 保存済みジョブの状態や出力ハッシュを確認する |
 | 完了済みの途中状態を整理する | [`cleanup`](#cleanup) | 対象を表示し、`--apply` 指定時だけ削除する |
 
@@ -355,21 +355,23 @@ heartbeatは既定60秒です。
 `--heartbeat-seconds`または設定fileで変更できます。
 これは長いASR処理が生存していることを示しますが、ASRの強制timeoutではありません。
 
-### `prepare`
+### `transcribe --suggest-phrases`
 
-`transcribe` → `phrases suggest` を一括で実行します。[生成AIの接続設定](#phrases-suggest)を用意してから実行してください。
+文字起こしに用語候補ファイルの生成を追加します。旧 `prepare` はこのオプションに、旧 `phrases suggest` は単体コマンド `suggest-phrases` に置き換わりました。[生成AIの接続設定](#suggest-phrases)を用意してから実行してください。
 
 ```powershell
-tkn-audio-transcriber prepare "C:\path\to\meeting.m4a" --profile cloud/azure-ja `
+tkn-audio-transcriber transcribe --suggest-phrases "C:\path\to\meeting.m4a" --profile cloud/azure-ja `
   --output-dir "C:\path\to\meeting-review" `
   --allow-cloud-upload
 ```
 
-指定先の `transcript/<元ファイル名>_<音声ID>/` に全編FLACと文字起こし一式、`vocabulary/` に `phrases.txt`、`review.md`、`candidates.json`、`manifest.json` を保存し、用語確認の段階で停止します。`--output-dir` は必須です。ローカル認識でも利用できます。
+指定先の `transcript/<元ファイル名>_<音声ID>/` に全編FLACと文字起こし一式、`vocabulary/` に `phrases.txt`、`review.md`、`candidates.json`、`manifest.json` を保存してコマンドを終了します。確認入力を待つ処理はありません。出力先は通常の文字起こしと同様、`--output-dir`、設定の `folders.output`、既定の作業ディレクトリの順に決まります。`--output-dir` は省略できます。`--overwrite` は併用できません。ローカル認識でも利用できます。
 
-`transcribe` と同じ認識オプションに加え、`--generation-profile`、`--context-file`、`--max-candidates` を指定できます。既存の設定や `--phrase-file` の用語は初回の認識にも適用されます。
+文字起こしには `transcribe` と同じ処理を使います。同じ音声・認識設定・用語リストなら、認識品質を下げる簡易処理にはなりません。生成AIは保存された文字起こしから用語候補を作るだけで、文字起こし本文を書き換えません。
 
-`--dry-run` では通信・保存・モデル取得を行わず、両工程の設定を検査します。生成AIの入力トークン数・費用はこの段階では見積もりません。保存済みJSONLの見積もりは `phrases suggest --dry-run` で確認できます。`--json` では両工程の結果をまとめたJSONを出力します。
+`--suggest-phrases` を指定すると、通常の認識オプションに加え、`--generation-profile`、`--context-file`、`--max-candidates` を指定できます。既存の設定や `--phrase-file` の用語は初回の認識にも適用されます。
+
+`--dry-run` では通信・保存・モデル取得を行わず、両工程の設定を検査します。生成AIの入力トークン数・費用はこの段階では見積もりません。保存済みJSONLの見積もりは `suggest-phrases --dry-run` で確認できます。`--json` では両工程の結果をまとめたJSONを出力します。
 
 候補生成だけが失敗した場合は、同じコマンドを再実行すると、音声・設定・成果物が変わっていない完成済みの文字起こしを再利用します。`vocabulary/` が既に存在する場合は、確認・編集した用語を守るため実行前に停止します。作り直す場合は新しい出力先を指定してください。
 
@@ -382,7 +384,7 @@ tkn-audio-transcriber transcribe "C:\path\to\meeting.m4a" --profile cloud/azure-
   --allow-cloud-upload
 ```
 
-### `phrases suggest`
+### `suggest-phrases`
 
 初回の文字起こしから固有名詞・専門用語の候補を作り、確認後に同じ音声を再認識できます。
 生成AIには文字起こしと任意の参考テキストを渡します。音声は渡しません。
@@ -418,12 +420,12 @@ tkn-audio-transcriber transcribe "C:\path\to\meeting.m4a" --profile cloud/azure-
   --output-dir "C:\path\to\first" --allow-cloud-upload
 
 # 2. 生成内容・接続先・概算tokenを確認（通信・保存なし）
-tkn-audio-transcriber phrases suggest `
+tkn-audio-transcriber suggest-phrases `
   "C:\path\to\first\meeting_0123456789ab\transcript_cloud_azure-ja_abcdef012345.jsonl" `
   --output-dir "C:\path\to\vocabulary" --dry-run
 
 # 3. 用語候補を生成。vocabulary は未作成のフォルダを指定
-tkn-audio-transcriber phrases suggest `
+tkn-audio-transcriber suggest-phrases `
   "C:\path\to\first\meeting_0123456789ab\transcript_cloud_azure-ja_abcdef012345.jsonl" `
   --output-dir "C:\path\to\vocabulary"
 
@@ -443,7 +445,7 @@ tkn-audio-transcriber transcribe "C:\path\to\meeting.m4a" --profile cloud/azure-
 | `candidates.json` | 引用照合済みの候補データ。生成時の記録として保持する |
 | `manifest.json` | 元テキストのhash、生成情報、生成時点の成果物hash |
 
-候補生成は `review_required` で終了し、再文字起こしは自動実行しません。
+候補ファイルを保存したらコマンドは終了します。結果の `review_required` は「候補を利用する前に内容を確認してください」という意味で、確認入力を待って実行中になる状態ではありません。再文字起こしは、用語を確認・修正した後に別途 `transcribe` で実行します。
 `phrases.txt` の手動編集後は生成時のhashと変わりますが、そのまま再認識に使用できます。
 生成AIが候補を挙げなかった場合は、空の用語一覧と説明を出します。
 再生成時は別の新規出力フォルダを指定してください。既存フォルダは空でも置換しません。

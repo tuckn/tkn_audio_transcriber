@@ -8,7 +8,17 @@
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-10-21
+
+### Fixed
+
+- `transcribe --suggest-phrases` でも `folders.output` と既定の出力先を使えるよう修正しました。`--output-dir` の明示指定は不要です。
+
+## [0.14.0] - 2026-10-21
+
 ### Changed
+
+- `prepare` を `transcribe --suggest-phrases` に統合し、単体の `phrases suggest` を `suggest-phrases` に変更しました。旧コマンドは削除しました。候補ファイルを保存したらコマンドは終了します。
 
 - `--profile` と `--config` を対象コマンドの後にも指定可能にし、README の例をコマンド先頭の順序に統一しました。
 
