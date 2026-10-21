@@ -73,7 +73,7 @@ uv tool install .
 tkn-audio-transcriber --version
 ```
 
-`tkn-audio-transcriber 0.14.1` のようにパッケージのバージョンが表示されれば導入できています。コマンドとオプションは `tkn-audio-transcriber --help`、各コマンドの詳細は `tkn-audio-transcriber transcribe --help` などで確認できます。
+`tkn-audio-transcriber 0.14.2` のようにパッケージのバージョンが表示されれば導入できています。コマンドとオプションは `tkn-audio-transcriber --help`、各コマンドの詳細は `tkn-audio-transcriber transcribe --help` などで確認できます。
 
 ソースを更新した後は、同じフォルダで `uv tool install . --reinstall` を実行してください。
 
@@ -365,7 +365,7 @@ tkn-audio-transcriber transcribe --suggest-phrases "C:\path\to\meeting.m4a" --pr
   --allow-cloud-upload
 ```
 
-指定先の `transcript/<元ファイル名>_<音声ID>/` に全編FLACと文字起こし一式、`vocabulary/` に `phrases.txt`、`review.md`、`candidates.json`、`manifest.json` を保存してコマンドを終了します。確認入力を待つ処理はありません。出力先は通常の文字起こしと同様、`--output-dir`、設定の `folders.output`、既定の作業ディレクトリの順に決まります。`--output-dir` は省略できます。`--overwrite` は併用できません。ローカル認識でも利用できます。
+指定先の `<元ファイル名>_<音声ID>/` に全編FLACと文字起こし一式、その音声フォルダ内の `vocabulary/` に `phrases.txt`、`review.md`、`candidates.json`、`manifest.json` を保存してコマンドを終了します。確認入力を待つ処理はありません。出力先は通常の文字起こしと同様、`--output-dir`、設定の `folders.output`、既定の作業ディレクトリの順に決まります。`--output-dir` は省略できます。`--overwrite` は併用できません。ローカル認識でも利用できます。
 
 文字起こしには `transcribe` と同じ処理を使います。同じ音声・認識設定・用語リストなら、認識品質を下げる簡易処理にはなりません。生成AIは保存された文字起こしから用語候補を作るだけで、文字起こし本文を書き換えません。
 
@@ -373,13 +373,13 @@ tkn-audio-transcriber transcribe --suggest-phrases "C:\path\to\meeting.m4a" --pr
 
 `--dry-run` では通信・保存・モデル取得を行わず、両工程の設定を検査します。生成AIの入力トークン数・費用はこの段階では見積もりません。保存済みJSONLの見積もりは `suggest-phrases --dry-run` で確認できます。`--json` では両工程の結果をまとめたJSONを出力します。
 
-候補生成だけが失敗した場合は、同じコマンドを再実行すると、音声・設定・成果物が変わっていない完成済みの文字起こしを再利用します。`vocabulary/` が既に存在する場合は、確認・編集した用語を守るため実行前に停止します。作り直す場合は新しい出力先を指定してください。
+候補生成だけが失敗した場合は、同じコマンドを再実行すると、音声・設定・成果物が変わっていない完成済みの文字起こしを再利用します。対象の音声フォルダ内に `vocabulary/` が既に存在する場合は、確認・編集した用語を守るため実行前に停止します。作り直す場合は新しい出力先を指定してください。
 
 `vocabulary/phrases.txt` を確認・修正した後、再文字起こしは明示的に実行します。
 
 ```powershell
 tkn-audio-transcriber transcribe "C:\path\to\meeting.m4a" --profile cloud/azure-ja `
-  --phrase-file "C:\path\to\meeting-review\vocabulary\phrases.txt" `
+  --phrase-file "C:\path\to\meeting-review\meeting_<音声ID>\vocabulary\phrases.txt" `
   --output-dir "C:\path\to\meeting-refined" `
   --allow-cloud-upload
 ```

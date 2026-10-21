@@ -208,8 +208,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     transcribe_command.add_argument(
         "--output-dir", type=Path,
-        help=("Output root; with --suggest-phrases creates transcript/ and vocabulary/; "
-              "otherwise a source-name/hash folder."),
+        help=("Output root; creates a source-name/hash folder. "
+              "--suggest-phrases adds vocabulary/ inside that folder."),
     )
     transcribe_command.add_argument(
         "--overwrite", action="store_true",

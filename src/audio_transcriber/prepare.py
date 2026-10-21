@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -28,35 +27,28 @@ def prepare_transcription(
     if root is None:
         raise ValidationError("transcribe --suggest-phrases requires an output directory")
     root = root.expanduser().resolve()
-    vocabulary = root / "vocabulary"
-    transcript_dir = root / "transcript"
     if root.exists() and not root.is_dir():
         raise ValidationError("Workflow output path is not a directory")
-    if vocabulary.exists() or vocabulary.is_symlink():
-        raise ValidationError(
-            f"Vocabulary output already exists: {vocabulary}; review the existing files "
-            "or choose a new --output-dir. No files were changed."
-        )
-    if transcript_dir.exists() and not transcript_dir.is_dir():
-        raise ValidationError("Transcript output path is not a directory")
     generation_plan = preflight_phrase_generation(
         config,
         generation_profile=generation_profile,
         context_file=context_file,
         max_candidates=max_candidates,
     )
-    transcript_config = replace(
-        config,
-        values={**config.values, "output_dir": str(transcript_dir)},
-        sources={**config.sources, "output_dir": "transcribe --suggest-phrases output directory"},
-    )
+    pipeline = TranscriptionPipeline(config=config, logger=logger)
+    # Use the same output calculation and validation as ordinary transcription.
+    planned = pipeline.transcribe(audio, dry_run=True, overwrite=False)
+    vocabulary = planned.outputs.jsonl.parent / "vocabulary"
+    if vocabulary.exists() or vocabulary.is_symlink():
+        raise ValidationError(
+            f"Vocabulary output already exists: {vocabulary}; review the existing files "
+            "or choose a new --output-dir. No files were changed."
+        )
     logger.info("Step 1/2: %s transcription", "Planning" if dry_run else "Running")
-    result = TranscriptionPipeline(config=transcript_config, logger=logger).transcribe(
-        audio,
-        dry_run=dry_run,
-        overwrite=False,
-        allow_cloud_upload=allow_cloud_upload,
+    result = planned if dry_run else pipeline.transcribe(
+        audio, dry_run=False, overwrite=False, allow_cloud_upload=allow_cloud_upload,
     )
+    vocabulary = result.outputs.jsonl.parent / "vocabulary"
     if dry_run:
         # Defer transcript-dependent validation and estimates to the standalone command.
         return {

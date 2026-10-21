@@ -92,10 +92,12 @@ def test_prepare_produces_transcript_and_review_then_stops(
     assert result["stop_after"] == "phrase_review"
     assert result["transcription"]["status"] == "created"
     media = Path(result["transcription"]["outputs"]["audio"]).parent
-    assert media.parent == tmp_path / "run/transcript"
-    assert len(list(media.iterdir())) == 5
+    assert media.parent == tmp_path / "run"
+    assert len(list(media.iterdir())) == 6
     assert (media / "audio.flac").is_file()
-    assert len(list((tmp_path / "run/vocabulary").iterdir())) == 4
+    assert len(list((media / "vocabulary").iterdir())) == 4
+    assert not (tmp_path / "run/transcript").exists()
+    assert not (tmp_path / "run/vocabulary").exists()
     assert len(workflow["azure"]) == len(workflow["generation"]) == 1
     assert "Azure text" in workflow["generation"][0].prompt
 
@@ -106,14 +108,14 @@ def test_generation_failure_resumes_without_another_audio_submission(
     workflow["fail_generation"] = True
     with pytest.raises(AudioTranscriberError, match="rerun the same transcribe --suggest-phrases"):
         run(workflow, allow_cloud_upload=True)
-    assert (tmp_path / "run/transcript").is_dir()
-    assert not (tmp_path / "run/vocabulary").exists()
+    assert list((tmp_path / "run").glob("*/transcript_*.jsonl"))
+    assert not list((tmp_path / "run").glob("*/vocabulary"))
     workflow["fail_generation"] = False
     result = run(workflow, allow_cloud_upload=True)
     assert result["transcription"]["status"] == "unchanged"
     assert len(workflow["azure"]) == 1
     assert len(workflow["generation"]) == 2
-    terms = tmp_path / "run/vocabulary/phrases.txt"
+    terms = Path(result["transcription"]["outputs"]["jsonl"]).parent / "vocabulary/phrases.txt"
     terms.write_text("Human correction\n", encoding="utf-8")
     with pytest.raises(ValidationError, match="already exists"):
         run(workflow, allow_cloud_upload=True)
@@ -151,7 +153,8 @@ def test_invalid_generation_inputs_fail_before_transcription(
     elif problem == "profile":
         kwargs["generation_profile"] = "missing"
     else:
-        (tmp_path / "run/vocabulary").mkdir(parents=True)
+        plan = run(workflow, dry_run=True)
+        Path(plan["suggestions"]["output_dir"]).mkdir(parents=True)
     with pytest.raises(AudioTranscriberError):
         run(workflow, allow_cloud_upload=True, **kwargs)
     assert not workflow["ffmpeg"] and not workflow["azure"] and not workflow["generation"]
@@ -206,9 +209,11 @@ def test_prepare_cli_json_and_options(
         else:
             expected_root = tmp_path
     assert main(args) == 0
-    assert (expected_root / "vocabulary" / "phrases.txt").is_file()
-    assert list((expected_root / "transcript").rglob("*.jsonl"))
     result = json.loads(capsys.readouterr().out)
+    media = Path(result["transcription"]["outputs"]["jsonl"]).parent
+    assert media.parent == expected_root
+    assert (media / "vocabulary/phrases.txt").is_file()
+    assert list(media.glob("transcript_*.jsonl"))
     assert result["status"] == "review_required"
     assert result["suggestions"]["max_candidates"] == 10
     assert result["suggestions"]["generation_profile"] == "codex"
@@ -224,3 +229,32 @@ def test_prepare_rejects_overwrite() -> None:
         with pytest.raises(SystemExit) as caught:
             main(args)
         assert caught.value.code == 2
+
+
+def test_suggestions_share_normal_transcription_paths(workflow: dict[str, Any]) -> None:
+    normal = TranscriptionPipeline(
+        config=workflow["config"], logger=make_logger()
+    ).transcribe(workflow["audio"], dry_run=True, overwrite=False)
+    planned = run(workflow, dry_run=True)
+    assert planned["transcription"]["outputs"] == normal.outputs.as_dict()
+    assert Path(planned["suggestions"]["output_dir"]) == normal.outputs.jsonl.parent / "vocabulary"
+    actual = run(workflow, allow_cloud_upload=True)
+    assert actual["transcription"]["outputs"] == normal.outputs.as_dict()
+    assert Path(planned["suggestions"]["output_dir"]).is_dir()
+
+
+def test_different_audio_has_its_own_vocabulary(
+    tmp_path: Path, workflow: dict[str, Any]
+) -> None:
+    first = run(workflow, allow_cloud_upload=True)
+    first_terms = Path(first["transcription"]["outputs"]["jsonl"]).parent / "vocabulary/phrases.txt"
+    first_terms.write_text("Reviewed term", encoding="utf-8")
+    second_audio = tmp_path / "second.wav"
+    second_audio.write_bytes(b"second source audio")
+    workflow["audio"] = second_audio
+    second = run(workflow, allow_cloud_upload=True)
+    second_media = Path(second["transcription"]["outputs"]["jsonl"]).parent
+    assert (second_media / "vocabulary/phrases.txt").is_file()
+    assert second_media != first_terms.parent.parent
+    assert first_terms.read_text(encoding="utf-8") == "Reviewed term"
+    assert len(workflow["azure"]) == len(workflow["generation"]) == 2
