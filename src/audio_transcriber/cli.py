@@ -31,18 +31,19 @@ def _parser() -> argparse.ArgumentParser:
         description=("Create Markdown, SRT, and JSONL transcripts with local or Azure Speech ASR."),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    parser.add_argument(
-        "--config",
-        type=Path,
-        help="Explicit YAML config (after user and working-directory config).",
+    config_help = "Explicit YAML config (after user and working-directory config)."
+    parser.add_argument("--config", type=Path, help=config_help)
+    profile_help = (
+        "Transcription profile such as local/gpu-quality or cloud/azure-ja; "
+        "an unqualified unique name is also accepted."
     )
-    parser.add_argument(
-        "--profile",
-        metavar="MODE/NAME",
-        help=(
-            "Transcription profile such as local/gpu-quality or cloud/azure-ja; "
-            "an unqualified unique name is also accepted."
-        ),
+    parser.add_argument("--profile", metavar="MODE/NAME", help=profile_help)
+    command_options = argparse.ArgumentParser(add_help=False)
+    command_options.add_argument(
+        "--config", type=Path, default=argparse.SUPPRESS, help=config_help
+    )
+    command_options.add_argument(
+        "--profile", metavar="MODE/NAME", default=argparse.SUPPRESS, help=profile_help
     )
     verbosity = parser.add_mutually_exclusive_group()
     verbosity.add_argument("-q", "--quiet", action="store_true", help="Show errors only.")
@@ -71,13 +72,15 @@ def _parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="Print the planned action without writing."
     )
     config_list = config_commands.add_parser(
-        "list", help="List resolved settings and their sources as key=value lines."
+        "list", parents=[command_options],
+        help="List resolved settings and their sources as key=value lines."
     )
     config_list.add_argument(
         "--json", action="store_true", help="Print the full resolved configuration as JSON."
     )
     config_commands.add_parser(
-        "profiles", help="List available transcription profiles and the active selection."
+        "profiles", parents=[command_options],
+        help="List available transcription profiles and the active selection."
     )
     config_migrate = config_commands.add_parser(
         "migrate", help="Migrate one config to the current schema with a backup."
@@ -94,7 +97,9 @@ def _parser() -> argparse.ArgumentParser:
 
     model_parser = commands.add_parser("model", help="Manage local faster-whisper models.")
     model_commands = model_parser.add_subparsers(dest="model_command", required=True)
-    model_download = model_commands.add_parser("download", help="Download a model explicitly.")
+    model_download = model_commands.add_parser(
+        "download", parents=[command_options], help="Download a model explicitly."
+    )
     model_download.add_argument("model", help="Known model name or Hugging Face repository ID.")
     model_download.add_argument(
         "--model-dir", type=Path, help="Override the configured model directory."
@@ -106,7 +111,7 @@ def _parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="Print the download plan without writing."
     )
 
-    transcribe = argparse.ArgumentParser(add_help=False)
+    transcribe = argparse.ArgumentParser(add_help=False, parents=[command_options])
     transcribe.add_argument(
         "audio",
         type=Path,
@@ -224,7 +229,8 @@ def _parser() -> argparse.ArgumentParser:
     phrases = commands.add_parser("phrases", help="Prepare vocabulary for human review.")
     phrase_commands = phrases.add_subparsers(dest="phrases_command", required=True)
     suggest = phrase_commands.add_parser(
-        "suggest", help="Use GenAI Bridge to propose phrases from transcript JSONL, then stop."
+        "suggest", parents=[command_options],
+        help="Use GenAI Bridge to propose phrases from transcript JSONL, then stop."
     )
     suggest.add_argument("transcript", type=Path, help="Transcript JSONL produced by this CLI.")
     suggest.add_argument("--output-dir", type=Path, required=True, help="New review directory.")
@@ -245,7 +251,10 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also re-hash the original source media file.",
     )
-    cleanup = commands.add_parser("cleanup", help="Plan or remove validated completed job state.")
+    cleanup = commands.add_parser(
+        "cleanup", parents=[command_options],
+        help="Plan or remove validated completed job state."
+    )
     cleanup.add_argument("--state-dir", type=Path, help="Durable checkpoint root.")
     cleanup.add_argument(
         "--older-than-days",
@@ -260,7 +269,8 @@ def _parser() -> argparse.ArgumentParser:
     )
 
     status = commands.add_parser(
-        "status", help="Show durable transcription job state and heartbeat details."
+        "status", parents=[command_options],
+        help="Show durable transcription job state and heartbeat details."
     )
     status.add_argument("--state-dir", type=Path, help="Durable checkpoint root.")
     return parser

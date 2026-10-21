@@ -95,7 +95,7 @@ tkn-audio-transcriber config init .tkn/config.yaml
 tkn-audio-transcriber config profiles
 ```
 
-同梱されるローカル設定は `local-small`、`local-large`、`gpu-quality`、`gpu-fast`、Azure 設定は `azure-ja` です。通常使う設定は YAML の `transcription.active` で選び、1 回だけ切り替える場合は `--profile MODE/NAME` をコマンド名より前に指定します。
+同梱されるローカル設定は `local-small`、`local-large`、`gpu-quality`、`gpu-fast`、Azure 設定は `azure-ja` です。通常使う設定は YAML の `transcription.active` で選び、1 回だけ切り替える場合はコマンドの後に `--profile MODE/NAME` を指定します。従来のコマンド前の指定も使えます。
 
 ```yaml
 # config.yaml の transcription 部分だけを変更する例
@@ -230,19 +230,19 @@ nested mapping は `.`、配列要素は `[0]` などの index で表し、空�
 ```shell
 tkn-audio-transcriber config list
 tkn-audio-transcriber config list --json
-tkn-audio-transcriber --config "C:\path\to\config.yaml" config list
-tkn-audio-transcriber --profile local/gpu-quality config list
+tkn-audio-transcriber config list --config "C:\path\to\config.yaml"
+tkn-audio-transcriber config list --profile local/gpu-quality
 ```
 
 ### `config profiles`
 
 local/cloud別の名前付き文字起こしprofile、各provider、activeな選択を一覧表示します。
 読み取り専用です。
-YAMLを編集せずに別profileを確認するときは、global `--profile`を使います。
+YAMLを編集せずに別profileを確認するときは、`--profile`を使います。
 
 ```console
 tkn-audio-transcriber config profiles
-tkn-audio-transcriber --profile local/gpu-quality config profiles
+tkn-audio-transcriber config profiles --profile local/gpu-quality
 ```
 
 `--provider`単独指定はありません。
@@ -360,7 +360,7 @@ heartbeatは既定60秒です。
 `transcribe` → `phrases suggest` を一括で実行します。[生成AIの接続設定](#phrases-suggest)を用意してから実行してください。
 
 ```powershell
-tkn-audio-transcriber --profile cloud/azure-ja prepare "C:\path\to\meeting.m4a" `
+tkn-audio-transcriber prepare "C:\path\to\meeting.m4a" --profile cloud/azure-ja `
   --output-dir "C:\path\to\meeting-review" `
   --allow-cloud-upload
 ```
@@ -376,7 +376,7 @@ tkn-audio-transcriber --profile cloud/azure-ja prepare "C:\path\to\meeting.m4a" 
 `vocabulary/phrases.txt` を確認・修正した後、再文字起こしは明示的に実行します。
 
 ```powershell
-tkn-audio-transcriber --profile cloud/azure-ja transcribe "C:\path\to\meeting.m4a" `
+tkn-audio-transcriber transcribe "C:\path\to\meeting.m4a" --profile cloud/azure-ja `
   --phrase-file "C:\path\to\meeting-review\vocabulary\phrases.txt" `
   --output-dir "C:\path\to\meeting-refined" `
   --allow-cloud-upload
@@ -414,7 +414,7 @@ generation:
 
 ```powershell
 # 1. 初回の文字起こし
-tkn-audio-transcriber --profile cloud/azure-ja transcribe "C:\path\to\meeting.m4a" `
+tkn-audio-transcriber transcribe "C:\path\to\meeting.m4a" --profile cloud/azure-ja `
   --output-dir "C:\path\to\first" --allow-cloud-upload
 
 # 2. 生成内容・接続先・概算tokenを確認（通信・保存なし）
@@ -431,7 +431,7 @@ tkn-audio-transcriber phrases suggest `
 notepad "C:\path\to\vocabulary\phrases.txt"
 
 # 5. 確認した用語を使って再認識
-tkn-audio-transcriber --profile cloud/azure-ja transcribe "C:\path\to\meeting.m4a" `
+tkn-audio-transcriber transcribe "C:\path\to\meeting.m4a" --profile cloud/azure-ja `
   --phrase-file "C:\path\to\vocabulary\phrases.txt" `
   --output-dir "C:\path\to\second" --allow-cloud-upload
 ```
@@ -615,8 +615,8 @@ credential作成、token取得、Azure API、model download、`ffmpeg`を呼び�
 予定provider、endpoint種別、region、API version、locale、cloud承認の要否を表示します。
 
 ```powershell
-tkn-audio-transcriber --profile cloud/azure-ja transcribe `
-  "C:\path\to\meeting.mp4" --dry-run
+tkn-audio-transcriber transcribe "C:\path\to\meeting.mp4" `
+  --profile cloud/azure-ja --dry-run
 ```
 
 > [!IMPORTANT]
@@ -625,8 +625,8 @@ tkn-audio-transcriber --profile cloud/azure-ja transcribe `
 Azure の実行には YAML に保存できない実行単位の承認フラグが必要です。
 
 ```powershell
-tkn-audio-transcriber --profile cloud/azure-ja transcribe `
-  "C:\path\to\meeting.mp4" --allow-cloud-upload
+tkn-audio-transcriber transcribe "C:\path\to\meeting.mp4" `
+  --profile cloud/azure-ja --allow-cloud-upload
 ```
 
 `--dry-run`、ハッシュ計算、ローカルでの正規化は Speech API を呼びません。
@@ -744,7 +744,7 @@ Azure error時に`faster-whisper`へfallbackしません。
 2. `~/.tkn/audio_transcriber/config.yaml`
 3. `./.tkn/config.yaml`
 4. 明示した`--config`
-5. 設定済み`transcription.active.{mode,profile}`またはglobal `--profile MODE/NAME`
+5. 設定済み`transcription.active.{mode,profile}`または`--profile MODE/NAME`
 6. 個別CLI option
 
 unknown key、不正type、未対応`schema_version`はerrorです。

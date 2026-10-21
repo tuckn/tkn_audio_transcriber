@@ -173,10 +173,10 @@ def test_prepare_cli_json_and_options(
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     args = [
-        "--profile",
-        "cloud/azure-ja",
         "prepare",
         str(workflow["audio"]),
+        "--profile",
+        "cloud/azure-ja",
         "--output-dir",
         str(tmp_path / "run"),
         "--state-dir",

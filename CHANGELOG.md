@@ -8,6 +8,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `--profile` と `--config` を対象コマンドの後にも指定可能にし、README の例をコマンド先頭の順序に統一しました。
+
 ## [0.13.1] - 2026-10-21
 
 ### Changed

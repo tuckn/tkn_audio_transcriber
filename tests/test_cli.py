@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from audio_transcriber.cli import _config_lines, main
+from audio_transcriber.cli import _config_lines, _parser, main
 from audio_transcriber.errors import ValidationError
 from audio_transcriber.models import OutputPaths, TranscriptionResult
 
@@ -27,6 +27,42 @@ def test_transcribe_help_describes_audio_and_video(capsys: object) -> None:
     assert "--provider" not in captured.out
     assert "cached credentials cannot be reused" in " ".join(captured.out.split())
     assert "--json" in captured.out
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["config", "list"],
+        ["config", "profiles"],
+        ["model", "download", "small"],
+        ["transcribe", "audio.wav"],
+        ["prepare", "audio.wav", "--output-dir", "review"],
+        ["phrases", "suggest", "transcript.jsonl", "--output-dir", "review"],
+        ["cleanup"],
+        ["status"],
+    ],
+)
+def test_config_options_work_after_resolving_commands(command: list[str]) -> None:
+    args = _parser().parse_args(
+        [*command, "--profile", "local/local-large", "--config", "config.yaml"]
+    )
+    assert args.profile == "local/local-large"
+    assert args.config == Path("config.yaml")
+
+
+def test_profile_before_command_remains_supported() -> None:
+    args = _parser().parse_args(
+        ["--profile", "local/local-large", "prepare", "audio.wav", "--output-dir", "review"]
+    )
+    assert args.profile == "local/local-large"
+
+
+def test_profile_after_command_overrides_earlier_selection() -> None:
+    args = _parser().parse_args([
+        "--profile", "local/local-small", "transcribe", "audio.wav",
+        "--profile", "local/local-large",
+    ])
+    assert args.profile == "local/local-large"
 
 
 def test_transcribe_prints_copyable_paths_by_default(
