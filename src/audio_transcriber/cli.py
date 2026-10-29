@@ -3,9 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from . import __version__
 from .config import (
@@ -20,16 +21,54 @@ from .job_state import list_jobs
 from .logging_config import configure_logging
 from .maintenance import cleanup_jobs
 from .model_store import download_model
-from .models import TranscriptionResult
+from .output import emit
 from .pipeline import TranscriptionPipeline
 from .validation import validate_artifact
 
 
+class UsageError(AudioTranscriberError):
+    """An argument error rendered through the selected result format."""
+
+
+class Parser(argparse.ArgumentParser):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("allow_abbrev", False)
+        super().__init__(*args, **kwargs)
+        self.add_argument(
+            "--json", action="store_true", default=argparse.SUPPRESS,
+            help="Print one JSON result instead of the default key=value list; no effect on files.",
+        )
+        logs = self.add_mutually_exclusive_group()
+        logs.add_argument(
+            "-q", "--quiet", action="store_true", default=argparse.SUPPRESS,
+            help="Show only errors on stderr; always print the final result.",
+        )
+        logs.add_argument(
+            "-v", "--verbose", action="store_true", default=argparse.SUPPRESS,
+            help="Show debug diagnostics on stderr; keep the same final result.",
+        )
+
+    def error(self, message: str) -> NoReturn:
+        raise UsageError(message)
+
+
+def _target_paths(args: argparse.Namespace) -> list[str]:
+    paths: list[str] = []
+    for key in ("audio", "transcript", "manifest", "path", "config", "output_dir",
+                "state_dir", "context_file", "model_dir", "cache_dir", "phrase_file"):
+        value = getattr(args, key, None)
+        for path in value if isinstance(value, list) else [value]:
+            if path is not None:
+                paths.append(str(Path(path).expanduser().absolute()))
+    return list(dict.fromkeys(paths))
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser: argparse.ArgumentParser = Parser(
         prog="tkn-audio-transcriber",
         description=("Create Markdown, SRT, and JSONL transcripts with local or Azure Speech ASR."),
     )
+    parser.set_defaults(json=False, quiet=False, verbose=False)
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     config_help = "Explicit YAML config (after user and working-directory config)."
     parser.add_argument("--config", type=Path, help=config_help)
@@ -45,9 +84,6 @@ def _parser() -> argparse.ArgumentParser:
     command_options.add_argument(
         "--profile", metavar="MODE/NAME", default=argparse.SUPPRESS, help=profile_help
     )
-    verbosity = parser.add_mutually_exclusive_group()
-    verbosity.add_argument("-q", "--quiet", action="store_true", help="Show errors only.")
-    verbosity.add_argument("-v", "--verbose", action="store_true", help="Show debug details.")
     commands = parser.add_subparsers(dest="command", required=True)
 
     config_parser = commands.add_parser(
@@ -71,12 +107,9 @@ def _parser() -> argparse.ArgumentParser:
     config_init.add_argument(
         "--dry-run", action="store_true", help="Print the planned action without writing."
     )
-    config_list = config_commands.add_parser(
+    config_commands.add_parser(
         "list", parents=[command_options],
         help="List resolved settings and their sources as key=value lines."
-    )
-    config_list.add_argument(
-        "--json", action="store_true", help="Print the full resolved configuration as JSON."
     )
     config_commands.add_parser(
         "profiles", parents=[command_options],
@@ -196,11 +229,6 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Validate input and print planned outputs without writing.",
     )
-    transcribe.add_argument(
-        "--json",
-        action="store_true",
-        help="Print the transcription result as machine-readable JSON instead of plain text.",
-    )
 
     transcribe_command = commands.add_parser(
         "transcribe", parents=[transcribe],
@@ -244,7 +272,6 @@ def _parser() -> argparse.ArgumentParser:
     suggest.add_argument(
         "--dry-run", action="store_true", help="Plan without generation or writes."
     )
-    suggest.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
 
     validate = commands.add_parser("validate", help="Validate output hashes and manifest.")
     validate.add_argument("manifest", type=Path, help="Transcript manifest JSON.")
@@ -276,63 +303,6 @@ def _parser() -> argparse.ArgumentParser:
     )
     status.add_argument("--state-dir", type=Path, help="Durable checkpoint root.")
     return parser
-
-
-def _json_result(payload: dict[str, Any]) -> None:
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
-
-
-def _config_lines(value: Any, prefix: str = "") -> list[str]:
-    """Flatten resolved config while keeping paths copyable and each value on one line."""
-    if isinstance(value, dict):
-        if not value:
-            return [f"{prefix}={{}}"]
-        return [
-            line
-            for key, item in value.items()
-            for line in _config_lines(item, f"{prefix}.{key}" if prefix else key)
-        ]
-    if isinstance(value, list):
-        if not value:
-            return [f"{prefix}=[]"]
-        return [
-            line
-            for index, item in enumerate(value)
-            for line in _config_lines(item, f"{prefix}[{index}]")
-        ]
-    if isinstance(value, str):
-        escapes = {"\r": "\\r", "\n": "\\n", "\t": "\\t"}
-        display = "".join(
-            escapes.get(char, f"\\x{ord(char):02x}")
-            if ord(char) < 32 or 127 <= ord(char) < 160
-            else char
-            for char in value
-        )
-    else:
-        display = json.dumps(value, ensure_ascii=False)
-    return [f"{prefix}={display}"]
-
-
-def _text_result(result: TranscriptionResult) -> None:
-    print(f"status: {result.status}")
-    print(f"source: {result.source}")
-    print(f"fingerprint: {result.fingerprint}")
-    print(f"segment_count: {result.segment_count}")
-    print("outputs:")
-    for name, path in result.outputs.as_dict().items():
-        print(f"  {name}: {path}")
-    if result.plan is not None:
-        print("plan:")
-
-        def show_plan(values: dict[str, Any], indent: str) -> None:
-            for name, value in values.items():
-                if isinstance(value, dict):
-                    print(f"{indent}{name}:")
-                    show_plan(value, indent + "  ")
-                else:
-                    print(f"{indent}{name}: {value}")
-
-        show_plan(result.plan, "  ")
 
 
 def _path_value(value: Path | None) -> str | None:
@@ -374,21 +344,58 @@ def _warn_in_memory_migrations(config: ResolvedConfig, logger: logging.Logger) -
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
+    raw = list(sys.argv[1:] if argv is None else argv)
+    # A minimal parse preserves display intent even if the real command is invalid.
+    flags = raw[:raw.index("--")] if "--" in raw else raw
+    options = argparse.Namespace(
+        json=any(flag == "--json" or flag.startswith("--json=") for flag in flags),
+        quiet=any(flag in {"-q", "--quiet"} for flag in flags),
+        verbose=any(flag in {"-v", "--verbose"} for flag in flags),
+    )
+    logger = configure_logging(quiet=options.quiet, verbose=options.verbose)
     parser = _parser()
-    args = parser.parse_args(argv)
-    if args.command == "transcribe":
-        if args.suggest_phrases:
-            if args.overwrite:
-                parser.error("--suggest-phrases cannot be combined with --overwrite")
-        elif any(value is not None for value in (
-            args.generation_profile, args.context_file, args.max_candidates
-        )):
-            parser.error("Generation options require --suggest-phrases")
-    logger = configure_logging(quiet=args.quiet, verbose=args.verbose)
+    args = argparse.Namespace()
+
+    def show(payload: dict[str, Any]) -> None:
+        emit(payload, json_output=options.json)
+
+    def failure(exc: BaseException, code: int, status: str = "failed") -> int:
+        paths = _target_paths(args)
+        if isinstance(exc, AudioTranscriberError) and exc.target_path is not None:
+            paths.append(str(exc.target_path.expanduser().absolute()))
+        if isinstance(exc, OSError) and exc.filename:
+            paths.append(str(Path(exc.filename).absolute()))
+        if getattr(args, "command", None) == "config" or type(exc).__name__ == "ConfigError":
+            for path in (default_user_config_path(), Path.cwd() / ".tkn" / "config.yaml"):
+                if path.is_file():
+                    paths.append(str(path.absolute()))
+        show({
+            "status": status,
+            "exit_code": code,
+            "command": getattr(args, "command", None),
+            "error": {"type": type(exc).__name__, "message": str(exc)},
+            "target_paths": list(dict.fromkeys(paths)),
+        })
+        return code
+
     try:
+        args = parser.parse_args(raw, namespace=args)
+        if args.quiet and args.verbose:
+            parser.error("--quiet and --verbose cannot be combined")
+        if args.command == "transcribe":
+            if args.suggest_phrases:
+                if args.overwrite:
+                    parser.error("--suggest-phrases cannot be combined with --overwrite")
+            elif any(value is not None for value in (
+                args.generation_profile, args.context_file, args.max_candidates
+            )):
+                parser.error("Generation options require --suggest-phrases")
         if args.command == "config":
             if args.config_command == "init":
-                _json_result(
+                show(
                     initialize_user_config(
                         _config_command_path(args),
                         force=args.force,
@@ -400,18 +407,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 config = _resolve(args)
                 _warn_in_memory_migrations(config, logger)
                 logger.info("Showing resolved configuration")
-                if args.json:
-                    _json_result(config.display())
-                else:
-                    print("\n".join(_config_lines(config.display())))
+                show(config.display())
                 return 0
             if args.config_command == "profiles":
                 config = _resolve(args)
                 _warn_in_memory_migrations(config, logger)
-                _json_result(config.profiles_display())
+                show(config.profiles_display())
                 return 0
             if args.config_command == "migrate":
-                _json_result(migrate_config_file(_config_command_path(args), dry_run=args.dry_run))
+                show(migrate_config_file(_config_command_path(args), dry_run=args.dry_run))
                 return 0
         if args.command == "model" and args.model_command == "download":
             overrides = {
@@ -423,7 +427,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             model_dir = config.path("model_dir")
             cache_dir = config.path("cache_dir")
             assert model_dir is not None and cache_dir is not None
-            _json_result(
+            show(
                 download_model(
                     model=args.model,
                     model_dir=model_dir,
@@ -471,12 +475,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     context_file=args.context_file, max_candidates=args.max_candidates,
                     dry_run=args.dry_run, allow_cloud_upload=args.allow_cloud_upload,
                 )
-                if args.json:
-                    _json_result(payload)
-                else:
-                    print("\n".join(_config_lines(payload)))
-                    if not args.dry_run:
-                        print("Review review.md and edit phrases.txt before retranscribing.")
+                show(payload)
                 return 0
             result = TranscriptionPipeline(config=config, logger=logger).transcribe(
                 args.audio,
@@ -484,10 +483,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 overwrite=args.overwrite,
                 allow_cloud_upload=args.allow_cloud_upload,
             )
-            if args.json:
-                _json_result(result.to_dict())
-            else:
-                _text_result(result)
+            show(result.to_dict())
             return 0
         if args.command == "suggest-phrases":
             from .phrase_suggestions import suggest_phrases
@@ -502,22 +498,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 generation_profile=args.generation_profile, context_file=args.context_file,
                 max_candidates=args.max_candidates, dry_run=args.dry_run,
             )
-            if args.json:
-                _json_result(payload)
-            else:
-                print("\n".join(_config_lines(payload)))
-                if not args.dry_run:
-                    print("Review review.md, edit phrases.txt, then run transcribe --phrase-file.")
+            show(payload)
             return 0
         if args.command == "validate":
-            _json_result(validate_artifact(args.manifest, verify_source=args.verify_source))
+            show(validate_artifact(args.manifest, verify_source=args.verify_source))
             return 0
         if args.command == "cleanup":
             config = _resolve(args, {"state_dir": _path_value(args.state_dir)})
             _warn_in_memory_migrations(config, logger)
             state_dir = config.path("state_dir")
             assert state_dir is not None
-            _json_result(
+            show(
                 cleanup_jobs(
                     state_dir,
                     older_than_days=args.older_than_days,
@@ -530,22 +521,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             _warn_in_memory_migrations(config, logger)
             state_dir = config.path("state_dir")
             assert state_dir is not None
-            _json_result(list_jobs(state_dir))
+            show(list_jobs(state_dir))
             return 0
         parser.error("Unsupported command")
         return 2
     except AudioTranscriberError as exc:
         logger.error("%s", exc)
-        return 2
-    except KeyboardInterrupt:
+        return failure(exc, 2)
+    except KeyboardInterrupt as exc:
         logger.error("Interrupted. Durable checkpoint files were kept for resume.")
-        return 130
+        return failure(exc, 130, "interrupted")
     except Exception as exc:
-        if args.verbose:
+        if options.verbose:
             logger.exception("Unexpected failure")
         else:
             logger.error("Unexpected failure: %s. Re-run with --verbose for details.", exc)
-        return 1
+        return failure(exc, 1)
 
 
 if __name__ == "__main__":

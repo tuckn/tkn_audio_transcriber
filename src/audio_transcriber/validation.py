@@ -38,22 +38,22 @@ def _validated_file(record: Any, label: str, manifest_dir: Path) -> Path:
     if not path.is_absolute():
         path = manifest_dir / path
     if not path.is_file():
-        raise ValidationError(f"Output is missing: {path}")
+        raise ValidationError(f"Output is missing: {path}", target_path=path)
     if not isinstance(expected_size, int) or path.stat().st_size != expected_size:
-        raise ValidationError(f"Output size does not match manifest: {path}")
+        raise ValidationError(f"Output size does not match manifest: {path}", target_path=path)
     if sha256_file(path) != expected_hash:
-        raise ValidationError(f"Output hash does not match manifest: {path}")
+        raise ValidationError(f"Output hash does not match manifest: {path}", target_path=path)
     return path
 
 
 def validate_artifact(manifest_path: Path, *, verify_source: bool) -> dict[str, Any]:
     path = manifest_path.expanduser().resolve()
     if not path.is_file():
-        raise ValidationError(f"Manifest not found: {path}")
+        raise ValidationError(f"Manifest not found: {path}", target_path=path)
     try:
         manifest = read_json(path)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
-        raise ValidationError(f"Cannot read manifest {path}: {exc}") from exc
+        raise ValidationError(f"Cannot read manifest {path}: {exc}", target_path=path) from exc
     schema_version = manifest.get("schema_version")
     if schema_version not in SUPPORTED_MANIFEST_SCHEMA_VERSIONS:
         raise ValidationError(
@@ -109,9 +109,11 @@ def validate_artifact(manifest_path: Path, *, verify_source: bool) -> dict[str, 
             raise ValidationError("Manifest source record is incomplete")
         source_path = Path(source_path_value)
         if not source_path.is_file():
-            raise ValidationError(f"Source is missing: {source_path}")
+            raise ValidationError(f"Source is missing: {source_path}", target_path=source_path)
         if sha256_file(source_path) != source_hash:
-            raise ValidationError(f"Source hash does not match manifest: {source_path}")
+            raise ValidationError(
+                f"Source hash does not match manifest: {source_path}", target_path=source_path
+            )
         source_verified = True
     return {
         "status": "valid",

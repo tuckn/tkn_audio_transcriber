@@ -73,7 +73,7 @@ uv tool install .
 tkn-audio-transcriber --version
 ```
 
-`tkn-audio-transcriber 0.14.2` のようにパッケージのバージョンが表示されれば導入できています。コマンドとオプションは `tkn-audio-transcriber --help`、各コマンドの詳細は `tkn-audio-transcriber transcribe --help` などで確認できます。
+`tkn-audio-transcriber 0.15.0` のようにパッケージのバージョンが表示されれば導入できています。コマンドとオプションは `tkn-audio-transcriber --help`、各コマンドの詳細は `tkn-audio-transcriber transcribe --help` などで確認できます。
 
 ソースを更新した後は、同じフォルダで `uv tool install . --reinstall` を実行してください。
 
@@ -123,7 +123,7 @@ tkn-audio-transcriber transcribe "C:\path\to\meeting.flac" --output-dir "C:\path
 tkn-audio-transcriber transcribe "C:\path\to\meeting.flac" --output-dir "C:\path\to\transcripts"
 ```
 
-標準出力の `status: created` と `outputs:` 以下のパスを確認し、`markdown:` に表示された `transcript_*.md` を開きます。本文には時刻付きの認識結果が入り、全編の `audio.flac`、SRT 字幕、JSONL データ、検証用 manifest も同じメディア用フォルダに作られます。文字起こしの正確さは自動検証の対象外なので、重要な固有名詞、日時、否定表現は原音と照合してください。
+標準出力の `status=created` と `outputs.` で始まる項目のパスを確認し、`outputs.markdown` に表示された `transcript_*.md` を開きます。本文には時刻付きの認識結果が入り、全編の `audio.flac`、SRT 字幕、JSONL データ、検証用 manifest も同じメディア用フォルダに作られます。文字起こしの正確さは自動検証の対象外なので、重要な固有名詞、日時、否定表現は原音と照合してください。
 
 成果物のサイズと SHA-256 を検査する場合は、表示された manifest のパスを指定します。
 
@@ -133,7 +133,7 @@ tkn-audio-transcriber validate "C:\path\to\transcripts\meeting_0123456789ab\tran
 
 ## 再実行と日常の操作
 
-同じ入力・設定で有効な成果物がすでにあれば `status: unchanged` となります。中断後は同じ `transcribe` コマンドを実行します。ローカル認識は完了済みチャンクを再利用し、Azure 認識は取得済み応答があれば再送せずに再利用します。実行状況と最終 heartbeat は `status` で確認できます。
+同じ入力・設定で有効な成果物がすでにあれば `status=unchanged` となります。中断後は同じ `transcribe` コマンドを実行します。ローカル認識は完了済みチャンクを再利用し、Azure 認識は取得済み応答があれば再送せずに再利用します。実行状況と最終 heartbeat は `status` で確認できます。
 
 ```powershell
 tkn-audio-transcriber status
@@ -157,7 +157,7 @@ tkn-audio-transcriber status
 
 ## 成果物と保存先
 
-`--output-dir` は保存先のルートです。その下に元ファイル名（拡張子なし）と元メディアの SHA-256 の先頭12桁でフォルダを作ります。日本語と空白は保持し、Windowsで使えない文字は置換します。長い名前は60 UTF-16単位に短縮します。以下のIDは架空の例で、実際には `outputs:` に表示されたパスを使ってください。
+`--output-dir` は保存先のルートです。その下に元ファイル名（拡張子なし）と元メディアの SHA-256 の先頭12桁でフォルダを作ります。日本語と空白は保持し、Windowsで使えない文字は置換します。長い名前は60 UTF-16単位に短縮します。以下のIDは架空の例で、実際には `outputs.` で始まる項目に表示されたパスを使ってください。
 
 ```text
 transcripts/
@@ -223,7 +223,7 @@ tkn-audio-transcriber config init
 既定では `git config --list` のように 1 行に 1 つの `key=value` を標準出力へ出します。
 nested mapping は `.`、配列要素は `[0]` などの index で表し、空の配列・mapping は `[]`・`{}`、boolean は `true`/`false`、未設定値は `null` と表示します。
 文字列は引用符で囲まず、Windows path の backslash はそのまま表示するためコピーできます。改行・タブなどの制御文字はエスケープします。
-機械処理用には `--json` を指定します。JSON の構造は従来の `config show` と同じです。
+機械処理用には `--json` を指定し、設定値とその出典を構造化した JSON として取得します。
 どちらの形式でも log は標準エラーへ出し、`--quiet` で省略できます。
 読み取り専用であり、設定・state・cache・report を作成・更新しません。
 
@@ -343,7 +343,7 @@ tkn-audio-transcriber cleanup --older-than-days 30 --apply
 
 ### `status`
 
-永続job stateを読み、実行段階、現在のチャンク、PID、最終heartbeat、最終checkpoint、run logの場所をJSONで表示します。
+永続job stateを読み、実行段階、現在のチャンク、PID、最終heartbeat、最終checkpoint、run logの場所を表示します（JSON は `--json`）。
 読み取り専用です。
 
 ```console
@@ -773,14 +773,34 @@ schema 1・2に`config migrate`を実行すると、validation、backup、atomic
 - `--overwrite`なしで異なる、または不完全な出力が存在: error
 - dry-run: `planned`
 
-`transcribe`の最終結果は標準出力へ通常のpathを含むテキストで出します。
-Windowsでも`markdown:`などの行からpathをそのままコピーしてExplorerで開けます。
-機械処理用のJSONが必要な場合は`transcribe ... --json`を指定してください。
-JSONのWindows pathは仕様上`\\`でエスケープされます。
-`config list` の既定表示は `key=value` です。JSON が必要な場合は `config list --json` を指定してください。
-その他のcommandの結果は従来どおりJSONです。
+全コマンドの最終結果は、既定では 1 行 1 項目の `key=value` 一覧です。
+入れ子は `.`、配列は `[0]` で表します。空の配列・mapping は `[]`・`{}`、boolean は
+`true`/`false`、未設定値は `null` です。文字列に引用符を付けず、Windows path の
+backslash を二重化・省略・切り詰めしません。改行・タブなどの制御文字は escape します。
+`--json` を指定すると、同じ結果を 1 つの妥当な JSON document として標準出力へ出します。
+JSON では仕様上 path の backslash が `\\` と表記されます。`--json` は成果物の種類や生成有無を変えません。
+コマンドの前後、多段サブコマンドの間で指定でき、TTY・pipe・redirect で形式を自動変更しません。
+失敗と中断にも選択した形式を適用し、`status`、`exit_code`、`command`、
+`error.type`、`error.message`、`target_paths`（対象の絶対パス配列）を返します。
+引数解析が完了していない場合は、取得できた command・path のみ表示します。
+正常時の結果では、文字起こしは `segment_count` と
+`outputs`、status は `job_count` と `jobs`、cleanup は候補・削除件数と対象配列を返します。
+cleanup の `skipped_count`・`failures_count` と各対象の `job_directory`、候補生成の
+`review_hint` は CLI 表示だけに追加します。Python API や保存する JSON・manifest は変更しません。
+全対象の詳細を通常表示・JSON の両方で省略せず表示するため、`--full-output` は設けていません。
+
+結果をプログラムで扱う場合は、`--json` を指定して JSON を解析します。
+
+```powershell
+# 人が結果を確認する例
+ tkn-audio-transcriber status
+# 自動処理で JSON を解析する例
+$result = tkn-audio-transcriber --json status | ConvertFrom-Json
+$result.job_count
+```
+
 進捗と診断は標準エラーへ`[LEVEL] message`形式で出します。
-`-q/--quiet`はerrorのみ、`-v/--verbose`はdebugも表示します。
+`-q/--quiet`はerrorのみ、`-v/--verbose`はdebugも表示します。最終結果は抑制・変更しません。
 対話terminalでANSI colorを利用できる場合は`SUCCESS`を緑、`ERROR`/`CRITICAL`を赤で表示します。
 redirect、`NO_COLOR`、`TERM=dumb`、Windows console非対応時は無色です。
 
@@ -792,7 +812,9 @@ checkpointがあるため、完了済みチャンクは再処理しません。
 
 無人実行では、`uv tool install .`でinstallし、元メディアと出力に絶対pathを使って、Windows Task Schedulerまたはcronからlocal profileを実行します。
 cloud profileは認証情報を再利用できますが、ログイン・MFAが必要なときは操作可能なデスクトップが必要なため、無人実行は保証しません。
-終了コードは、成功`0`、想定内の設定・入力・検証error`2`、中断`130`、想定外error`1`です。
+終了コードは、成功`0`、引数・設定・入力・検証error`2`、中断`130`、想定外error`1`です。
+既存の cleanup は個別削除失敗を `failures` に収集して終了 `0` を返す契約を維持します。
+自動処理では `failures_count` も確認してください。`review_required` は確認待ちの正常終了 `0` です。
 
 ## 制約とプライバシー
 

@@ -1,5 +1,12 @@
+from pathlib import Path
+
+
 class AudioTranscriberError(Exception):
-    """Expected, actionable CLI error."""
+    """Expected, actionable CLI error with optional copyable target metadata."""
+
+    def __init__(self, message: str, *, target_path: Path | None = None) -> None:
+        super().__init__(message)
+        self.target_path = target_path
 
 
 class ConfigError(AudioTranscriberError):

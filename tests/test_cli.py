@@ -3,9 +3,10 @@ from pathlib import Path
 
 import pytest
 
-from audio_transcriber.cli import _config_lines, _parser, main
+from audio_transcriber.cli import _parser, main
 from audio_transcriber.errors import ValidationError
 from audio_transcriber.models import OutputPaths, TranscriptionResult
+from audio_transcriber.output import lines as _config_lines
 
 
 def test_help_and_version(capsys: object) -> None:
@@ -96,16 +97,15 @@ def test_transcribe_prints_copyable_paths_by_default(
 
     captured = capsys.readouterr()  # type: ignore[attr-defined]
     assert captured.out.splitlines() == [
-        "status: created",
-        f"source: {source}",
-        "fingerprint: abc123",
-        "segment_count: 402",
-        "outputs:",
-        f"  audio: {outputs.audio}",
-        f"  markdown: {outputs.markdown}",
-        f"  srt: {outputs.srt}",
-        f"  jsonl: {outputs.jsonl}",
-        f"  manifest: {outputs.manifest}",
+        "status=created",
+        f"source={source}",
+        "fingerprint=abc123",
+        "segment_count=402",
+        f"outputs.audio={outputs.audio}",
+        f"outputs.markdown={outputs.markdown}",
+        f"outputs.srt={outputs.srt}",
+        f"outputs.jsonl={outputs.jsonl}",
+        f"outputs.manifest={outputs.manifest}",
     ]
     assert "Unexpected failure" not in captured.err
 
@@ -124,11 +124,11 @@ def test_transcribe_dry_run_prints_plan_as_text(
     assert main(["transcribe", str(source), "--dry-run"]) == 0
 
     captured = capsys.readouterr()  # type: ignore[attr-defined]
-    assert captured.out.startswith(f"status: planned\nsource: {source}\n")
+    assert captured.out.startswith(f"status=planned\nsource={source}\n")
     assert "transcript_local_local-small_" in captured.out
     assert "audio.flac" in captured.out
-    assert "plan:\n  mode: local\n  profile: local/local-small\n" in captured.out
-    assert "  network_calls: 0\n" in captured.out
+    assert "plan.mode=local\nplan.profile=local/local-small\n" in captured.out
+    assert "plan.network_calls=0\n" in captured.out
     assert f"[INFO] Hashing source media: {source}" in captured.err
 
 
@@ -254,7 +254,7 @@ def test_config_lines_preserve_paths_and_escape_control_characters() -> None:
         "empty_list=[]",
         "empty_mapping={}",
         "count=42",
-        r"text=a=b\r\n\tc\x00",
+        r"text=a=b\r\n\tc\u0000",
     ]
 
 
@@ -275,11 +275,9 @@ def test_config_list_without_config_does_not_create_directories(
 
 
 def test_config_show_is_removed(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) as exc:
-        main(["config", "show"])
-    assert exc.value.code == 2
+    assert main(["config", "show"]) == 2
     captured = capsys.readouterr()
-    assert captured.out == ""
+    assert "status=failed" in captured.out
     assert "invalid choice" in captured.err
 
 
@@ -302,7 +300,10 @@ def test_config_list_missing_explicit_config_reports_error(
     monkeypatch.chdir(tmp_path)
     assert main(["--config", "missing.yaml", "config", "list", *extra]) == 2
     captured = capsys.readouterr()
-    assert captured.out == ""
+    if extra:
+        assert json.loads(captured.out)["target_paths"] == [str(tmp_path / "missing.yaml")]
+    else:
+        assert f"target_paths[0]={tmp_path / 'missing.yaml'}" in captured.out
     assert "[ERROR] Explicit config file not found:" in captured.err
     assert not list(tmp_path.iterdir())
 
@@ -316,7 +317,7 @@ def test_config_profiles_lists_and_selects_profiles(
     monkeypatch.setenv("USERPROFILE", str(isolated_home))  # type: ignore[attr-defined]
     monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
 
-    assert main(["--profile", "local/local-large", "config", "profiles"]) == 0
+    assert main(["--json", "--profile", "local/local-large", "config", "profiles"]) == 0
 
     payload = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
     assert payload["active_mode"] == "local"
@@ -367,18 +368,18 @@ def test_config_init_and_migrate_commands(
     monkeypatch.setenv("USERPROFILE", str(isolated_home))  # type: ignore[attr-defined]
     monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
 
-    assert main(["config", "init", str(target)]) == 0
+    assert main(["config", "init", str(target), "--json"]) == 0
     initialized = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
     assert initialized["status"] == "created"
     assert target.read_text(encoding="utf-8").startswith('schema_version: "3.1.0"')
 
     target.write_text("schema_version: 1\nlanguage: en\n", encoding="utf-8")
-    assert main(["config", "migrate", str(target), "--dry-run"]) == 0
+    assert main(["config", "migrate", str(target), "--dry-run", "--json"]) == 0
     planned = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
     assert planned["status"] == "planned"
     assert target.read_text(encoding="utf-8").startswith("schema_version: 1\n")
 
-    assert main(["config", "migrate", str(target)]) == 0
+    assert main(["config", "migrate", str(target), "--json"]) == 0
     migrated = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
     assert migrated["status"] == "migrated"
     assert target.read_text(encoding="utf-8").startswith('schema_version: "3.1.0"')
@@ -459,7 +460,7 @@ def test_cuda_preflight_failure_is_an_actionable_cli_error(
     )
 
     captured = capsys.readouterr()  # type: ignore[attr-defined]
-    assert captured.out == ""
+    assert "status=failed" in captured.out
     assert "[ERROR] CUDA GPU runtime preflight failed" in captured.err
     assert "Unexpected failure" not in captured.err
 
@@ -522,16 +523,12 @@ def test_azure_profile_dry_run_does_not_require_upload_approval(
     ["--max-candidates", "10"],
 ])
 def test_generation_options_require_suggest_flag(option: list[str]) -> None:
-    with pytest.raises(SystemExit) as caught:
-        main(["transcribe", "audio.wav", *option])
-    assert caught.value.code == 2
+    assert main(["transcribe", "audio.wav", *option]) == 2
 
 
 @pytest.mark.parametrize("command", ["prepare", "phrases"])
 def test_removed_vocabulary_commands_are_rejected(command: str) -> None:
-    with pytest.raises(SystemExit) as caught:
-        main([command])
-    assert caught.value.code == 2
+    assert main([command]) == 2
 
 
 def test_vocabulary_help_uses_consistent_names(capsys: object) -> None:

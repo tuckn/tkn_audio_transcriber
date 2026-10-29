@@ -218,7 +218,7 @@ def test_prepare_cli_json_and_options(
     assert result["suggestions"]["max_candidates"] == 10
     assert result["suggestions"]["generation_profile"] == "codex"
     assert main(args) == 2
-    assert capsys.readouterr().out == ""
+    assert json.loads(capsys.readouterr().out)["status"] == "failed"
     assert len(workflow["azure"]) == len(workflow["generation"]) == 1
 
 
@@ -226,9 +226,7 @@ def test_prepare_rejects_overwrite() -> None:
     for args in (
         ["transcribe", "--suggest-phrases", "audio.wav", "--output-dir", "run", "--overwrite"],
     ):
-        with pytest.raises(SystemExit) as caught:
-            main(args)
-        assert caught.value.code == 2
+        assert main(args) == 2
 
 
 def test_suggestions_share_normal_transcription_paths(workflow: dict[str, Any]) -> None:
