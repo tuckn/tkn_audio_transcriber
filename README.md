@@ -1,6 +1,6 @@
-# tkn-audio-transcriber: 音声・動画を文字起こしする CLI
+# Tkn Audio Transcriber — 音声・動画を文字起こしする CLI
 
-音声ファイルや動画の音声を、時刻付きの Markdown 文字起こし、SRT 字幕、JSONL データに変換する CLI です。音声認識には、PC 上の `faster-whisper` または Azure Speech Fast Transcription を選べます。元のメディアは変更しません。
+`tkn-audio-transcriber` は、音声ファイルや動画の音声を、時刻付きの Markdown 文字起こし、SRT 字幕、JSONL データに変換する CLI です。音声認識には、PC 上の `faster-whisper` または Azure Speech Fast Transcription を選べます。元のメディアは変更しません。
 
 例えば `meeting.flac` を処理すると、主成果物 `meeting_<音声ID>/transcript_local_local-small_<生成ID>.md` に次のような本文ができます。これは形式を示す架空の抜粋です。
 
