@@ -1,6 +1,6 @@
 # Tkn Audio Transcriber — 音声・動画を文字起こしする CLI
 
-`tkn-audio-transcriber` は、音声ファイルや動画の音声を、時刻付きの Markdown 文字起こし、SRT 字幕、JSONL データに変換する CLI です。音声認識には、PC 上の `faster-whisper` または Azure Speech Fast Transcription を選べます。元のメディアは変更しません。
+`tkn-audio-transcriber` は、音声ファイルや動画の音声を、時刻付きの Markdown 文字起こし、時刻を除いた本文だけのテキスト、SRT 字幕、JSONL データに変換する CLI です。音声認識には、PC 上の `faster-whisper` または Azure Speech Fast Transcription を選べます。元のメディアは変更しません。
 
 例えば `meeting.flac` を処理すると、主成果物 `meeting_<音声ID>/transcript_local_local-small_<生成ID>.md` に次のような本文ができます。これは形式を示す架空の抜粋です。
 
@@ -73,7 +73,7 @@ uv tool install .
 tkn-audio-transcriber --version
 ```
 
-`tkn-audio-transcriber 0.15.0` のようにパッケージのバージョンが表示されれば導入できています。コマンドとオプションは `tkn-audio-transcriber --help`、各コマンドの詳細は `tkn-audio-transcriber transcribe --help` などで確認できます。
+`tkn-audio-transcriber 0.16.0` のようにパッケージのバージョンが表示されれば導入できています。コマンドとオプションは `tkn-audio-transcriber --help`、各コマンドの詳細は `tkn-audio-transcriber transcribe --help` などで確認できます。
 
 ソースを更新した後は、同じフォルダで `uv tool install . --reinstall` を実行してください。
 
@@ -150,6 +150,7 @@ tkn-audio-transcriber status
 | 旧設定を移す | [`config migrate`](#config-migrate) | 旧スキーマを検証し、バックアップ後に更新する |
 | モデルを事前取得する | [`model download`](#model-download) | ローカル認識モデルをダウンロードする |
 | 文字起こしを作る | [`transcribe`](#transcribe) | 全編 FLAC と文字起こし一式を作る |
+| 録音フォルダを処理する | [`pull`](#pull) | 設定した入力フォルダの新しいファイルを保管し、文字起こしする |
 | 文字起こしと用語候補を一括作成する | [`transcribe --suggest-phrases`](#transcribe---suggest-phrases) | 初回の文字起こしと用語候補ファイルの生成を一括実行する |
 | 用語候補を作る | [`suggest-phrases`](#suggest-phrases) | 保存済みの文字起こしから用語候補ファイルを生成する |
 | 状況・成果物を調べる | [`status`](#status)、[`validate`](#validate) | 保存済みジョブの状態や出力ハッシュを確認する |
@@ -164,6 +165,7 @@ transcripts/
   meeting_0123456789ab/
     audio.flac
     transcript_local_local-small_abcdef012345.md
+    transcript_local_local-small_abcdef012345.txt
     transcript_local_local-small_abcdef012345.srt
     transcript_local_local-small_abcdef012345.jsonl
     transcript_local_local-small_abcdef012345.manifest.json
@@ -173,9 +175,9 @@ transcripts/
 - 文字起こしの生成IDは入力、プロファイル、認識設定、ツール版から計算した fingerprint の先頭12桁です。設定や用語リストを変更しても前の結果は残ります。同じ条件の再実行では同じ名前を使います。
 - `audio.flac` は先頭音声ストリームの全編をモノラル16 kHz・16 bitに変換した音声です。local/cloud共通で必ず保存します。分割WAVは作業用で、最終音声は分割しません。Azureでは送信したFLACと同一のバイト列を保持します。
 - 既存の共有FLACはmanifestのハッシュ・サイズ・変換条件を検証して保持します。Azureではその音声を再利用し、localでは今回の正規化音声をFLAC化して既存音声との一致を確認します。破損や不一致があれば、`--overwrite` でも置き換えず停止します。短縮IDが同じでもmanifestの完全なハッシュが違えば停止します。
-- manifest schema 4は元パス・元ハッシュ、音声トラック `0:a:0`、変換条件、FLACのハッシュ・サイズ、認識設定を記録します。成果物パスは同じフォルダ内の相対パスなので、フォルダを移動しても `validate`（`--verify-source` なし） で検証できます。旧schema 1～3の検証も継続します。
+- manifest schema 4は元パス・元ハッシュ、音声トラック `0:a:0`、変換条件、FLACのハッシュ・サイズ、認識設定を記録します。成果物パスは同じフォルダ内の相対パスなので、フォルダを移動しても `validate`（`--verify-source` なし） で検証できます。旧schema 1～3の検証も継続します。0.16.0以降は本文だけのテキスト（`outputs.text`）も記録します。それより前のmanifestには含まれません。
 - 時刻は抽出した音声の先頭を0秒とする秒数です。無音除去・時間伸縮は行いません。コンテナに映像と音声の開始時刻差がある場合、その差の補正は行いません。
-- 年のフォルダは自動作成しません。収録年で分けたい場合は `--output-dir` にその年の保存先を指定します。
+- `transcribe` は年のフォルダを自動作成しません。収録年で分けたい場合は `--output-dir` にその年の保存先を指定します。[`pull`](#pull) では、出力先に `{year}` を書くと、ファイルの作成日時の年で分けられます。
 
 このFLACは変換後の音声の可逆圧縮であり、原本の全トラックや元の音質を保存するものではありません。元メディアはそのまま保持してください。
 
@@ -189,6 +191,7 @@ transcripts/
 | --- | --- |
 | `audio.flac` | 全編の正規化音声。原音照合・再利用用。全プロファイルで共有 |
 | `transcript_*.md` | 時刻付き本文を読む主成果物。Frontmatter に入力名、プロファイル、モデル、言語、ツールのバージョンなどを記録 |
+| `transcript_*.txt` | 時刻を除いた本文だけのテキスト。生成AIのプロンプトなどへそのまま貼る用。認識した区間ごとに1行。話者分離で話者が返された場合は `Speaker 1: ` のように行頭へ付ける |
 | `transcript_*.srt` | 再生ソフトや動画編集ソフトで使う字幕。Azure で話者情報が返された場合はラベルを含む |
 | `transcript_*.jsonl` | 1 行 1 JSON オブジェクトの区間データ。後続の処理に使う |
 | `transcript_*.manifest.json` | 入力ハッシュ、設定、実行情報、出力ハッシュを記録する検証用ファイル。`validate` の入力に使う |
@@ -324,6 +327,54 @@ Azure modeでは使用しません。
 local文字起こしのsegmentがdecode済みチャンクの末尾を部分的に越えた場合は末尾へ補正し、decode済み音声の完全に外側にあるsegmentは除外します。
 補正件数とdecode済み音声情報はmanifestの`decoded_audio`へ記録します。
 各stageとheartbeatはjobの`job.json`と`run.jsonl`へ保存します。
+
+### `pull`
+
+設定の `sources` に書いた入力フォルダから新しいファイルを探し、原本を保管してから文字起こしします。Windowsのサウンドレコーダーのように、決まったフォルダへ録音を保存するアプリと組み合わせて使います。
+
+```powershell
+# 実行前に、対象ファイル・保管先・出力先を確認する
+tkn-audio-transcriber pull --dry-run
+
+# cloud profile の source を含む場合は、送信の承認を付ける
+tkn-audio-transcriber pull --allow-cloud-upload
+
+# 名前を指定すると、その source だけを処理する
+tkn-audio-transcriber pull recordings --allow-cloud-upload
+```
+
+1ファイルごとに、次の順で処理します。
+
+1. 入力フォルダの直下にあり、`include` のパターンに合うファイルを、作成日時の古い順に選ぶ。名前が `.` で始まるファイルとフォルダは対象外。
+2. 最終更新から `min_age_seconds` 秒たっていないファイルは、録音中または書き込み中とみなして飛ばす（`status=skipped`）。
+3. `archive` があれば、原本を保管先へコピーし、サイズとSHA-256を照合する。保管先に同じ内容のファイルがあれば、コピーせずに使う。ただし、入力ファイルへのシンボリックリンクやハードリンクは、別のコピーとみなさない。
+4. 保管したコピー（`archive` がなければ入力ファイル）を、source の profile で文字起こしする。manifest の元パスは保管したコピーになる。
+5. `delete_source: true` なら、文字起こしが成功し、入力ファイルが保管時から変わっていないことを確かめてから、入力ファイルを消す。Windowsでは、ほかのプログラムが開けない状態でファイルを開き、そのまま照合して消すため、照合から削除までの間に書き足されることはない。録音アプリなどがまだファイルを開いていれば、消さずに残す。Windows以外では、照合と削除の間の書き込みまでは防げない。
+
+途中で失敗したファイルは入力フォルダに残ります。同じ `pull` を再実行すると、保管済みのコピーと、文字起こしの途中状態を再利用して続きから進めます。1件の失敗で他のファイルの処理は止めません。
+
+成果物の確定中に止まり、一部のファイルだけが残った場合、`pull` は既存の成果物を上書きしないため「Output already exists」で失敗し続けます。そのときは、結果の `archive_path` に出た保管先のファイルを、同じ profile と出力先で `transcribe --overwrite` してから、もう一度 `pull` を実行します。成果物がそろっていれば、`pull` は文字起こしをやり直さずに入力ファイルを消します。
+
+```powershell
+tkn-audio-transcriber transcribe "C:\path\to\recordings\2026\20260102T030405+0900.flac" `
+  --profile cloud/azure-ja --output-dir "C:\path\to\transcripts\2026" `
+  --overwrite --allow-cloud-upload
+```
+
+`archive.name` は保管するファイル名の付け方です。
+
+| 値 | 保管名 | 向いている場合 |
+| --- | --- | --- |
+| `created-time`（既定） | 作成日時。例: `20260102T030405+0900.flac` | サウンドレコーダーのように毎回同じ名前（`Recording.flac`）で保存するアプリ |
+| `original` | 元のファイル名 | 元の名前に意味がある場合 |
+
+同じ保管名で内容の違うファイルがすでにあれば、`20260102T030405+0900-2.flac` のように番号を付け、既存のファイルは上書きしません。保管先を入力フォルダと同じにはできません。
+
+作成日時は、記録できるOS（Windowsなど）ではファイルの作成日時、記録できないOSでは更新日時です。サウンドレコーダーでは作成日時が録音の開始時刻になります。保管名と `{year}` はこの日時を使います。
+
+結果は `items` に1ファイルずつ出ます。`status` は `transcribed`、`skipped`、`failed`、`planned`（`--dry-run`）のいずれかです。全体の `status` は、失敗がなければ `completed`、一部が失敗すれば `partial`、成功がなく失敗があれば `failed`、`--dry-run` では `planned` です。失敗が1件でもあれば終了コードは `2` です。
+
+cloud profile の source があるのに `--allow-cloud-upload` がない場合は、どのファイルもコピー・送信する前に停止します。`pull` は source ごとの profile を使うため、`--profile` は指定できません。
 
 ### `cleanup`
 
@@ -583,7 +634,7 @@ tkn-audio-transcriber model download small --dry-run
 実際の Speech リソース名は、ユーザー設定または Git から除外した作業ディレクトリ設定に保存します。次は Azure 実行に必要な設定の抜粋です。既存の設定は残し、`endpoint` のプレースホルダーを自分の Speech リソースの URL に置き換えてください。
 
 ```yaml
-schema_version: "3.1.0"
+schema_version: "3.2.0"
 transcription:
   active:
     mode: cloud
@@ -738,6 +789,44 @@ uploadが完了した可能性があるのにresponseがない場合は、課金
 Azure error時に`faster-whisper`へfallbackしません。
 別途local実行する場合は利用者が`local/NAME` profileを明示的に選びます。
 
+## 入力フォルダを設定する（sources）
+
+[`pull`](#pull) が処理する入力フォルダは、設定の `sources` に名前を付けて書きます。入力フォルダごとに、出力先、プロファイル、原本の保管先を決められます。`sources` は設定schema `"3.2.0"` で追加しました。使うときは、その設定ファイルの `schema_version` を `"3.2.0"` 以上にしてください。
+
+次は、サウンドレコーダーの録音を保管してからAzureで文字起こしし、成功したら録音フォルダから消す例です。パスは自分の環境に置き換えてください。
+
+```yaml
+schema_version: "3.2.0"
+
+sources:
+  recordings:
+    input_dir: ~/Documents/Sound Recordings
+    include: ['*.flac', '*.m4a', '*.mp3', '*.wav']
+    min_age_seconds: 30
+    profile: cloud/azure-ja
+    output_dir: 'C:\path\to\transcripts\{year}'
+    archive:
+      dir: 'C:\path\to\recordings\{year}'
+      name: created-time
+      delete_source: true
+```
+
+| 項目 | 必須 | 既定値 | 意味 |
+| --- | --- | --- | --- |
+| `input_dir` | ○ | | 新しいファイルを探すフォルダ。直下だけを見る |
+| `output_dir` | ○ | | 文字起こしの保存先ルート。`--output-dir` と同じ扱い |
+| `include` | | 主な音声形式（`*.flac`、`*.m4a`、`*.mp3`、`*.wav`、`*.wma`、`*.aac`、`*.ogg`、`*.opus`） | 対象にするファイル名のパターン。大文字と小文字を区別しない |
+| `min_age_seconds` | | `30` | 最終更新からこの秒数がたっていないファイルを飛ばす |
+| `profile` | | `transcription.active` | 使うプロファイル（`MODE/NAME`） |
+| `archive.dir` | `archive` を書くとき○ | | 原本の保管先 |
+| `archive.name` | | `created-time` | 保管名。`created-time` または `original` |
+| `archive.delete_source` | | `false` | `true` なら、保管と文字起こしの成功後に入力ファイルを消す |
+
+- `output_dir` と `archive.dir` には `{year}` を書けます。ファイルの作成日時の年（例: `2026`）に置き換わります。ほかの `{...}` はerrorです。
+- 相対パスは、その source を書いた設定ファイルのフォルダを基準にします。`~` はホームフォルダです。
+- `archive` を書かなければ、入力ファイルをその場で文字起こしし、入力ファイルは残します。入力ファイルを消せるのは、`archive` で保管したときだけです。
+- 後の設定ファイルに同じ名前の source があれば、その source 全体を置き換えます（項目ごとには混ぜません）。値を空にした名前（`recordings:`）は、前の設定ファイルの source を取り消します。
+
 ## 設定の優先順位
 
 後のsourceが前を上書きします。
@@ -754,14 +843,14 @@ unknown key、不正type、未対応`schema_version`はerrorです。
 `schema_version`は上位sourceから上書きする設定値ではなくsource metadataとして扱います。
 `config list`では選択profile、利用可能profile、各effective値のsource、各設定sourceのschema状態を確認できます。
 
-application-owned設定の独立したschema versionは`"3.1.0"`です。
+application-owned設定の独立したschema versionは`"3.2.0"`です。
 3要素のstringを必須とします。
-既存の`3.0.x`設定は編集不要で、構造を変えない新しいPatch（例: `"3.1.7"`）も受け付けます。
+既存の`3.0.x`・`3.1.x`設定は編集不要で、構造を変えない新しいPatch（例: `"3.2.7"`）も受け付けます。`sources` を使う設定ファイルだけは`"3.2.0"`以上が必要です。
 新しいMinor/Major、検証済み移行がない古いversion、不正形式、version欠落は、必要なactionを示すerrorになります。
 
 平坦な`1.0.x`、`1.1.x`、旧integer `schema_version: 1`、混在profile形式の`2.0.x`はin-memoryでlocal/cloud分離構造へ変換して読み取り、warningを表示します。
 読み取りだけではfileを書き換えません。
-schema 1・2に`config migrate`を実行すると、validation、backup、atomic replacementを経てschema `"3.1.0"`を永続化します。
+schema 1・2に`config migrate`を実行すると、validation、backup、atomic replacementを経てschema `"3.2.0"`を永続化します。
 
 ## 再実行と失敗時の動作
 
@@ -815,6 +904,7 @@ cloud profileは認証情報を再利用できますが、ログイン・MFAが�
 終了コードは、成功`0`、引数・設定・入力・検証error`2`、中断`130`、想定外error`1`です。
 既存の cleanup は個別削除失敗を `failures` に収集して終了 `0` を返す契約を維持します。
 自動処理では `failures_count` も確認してください。`review_required` は確認待ちの正常終了 `0` です。
+`pull` は、処理できなかったファイルが1件でもあれば終了コード `2` を返します（結果の `failures_count` と同じ件数）。
 
 ## 制約とプライバシー
 

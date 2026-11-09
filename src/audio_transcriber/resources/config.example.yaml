@@ -1,4 +1,20 @@
-schema_version: "3.1.0"
+schema_version: "3.2.0"
+
+# Folders whose new media files `pull` archives and transcribes. Relative paths
+# are relative to this config file. `{year}` is the year of the file's creation
+# time (its modification time where the platform records no creation time).
+sources: {}
+#  recordings:
+#    input_dir: ~/Documents/Sound Recordings
+#    include: ['*.flac', '*.m4a', '*.mp3', '*.wav']
+#    min_age_seconds: 30  # Skip files written within this many seconds.
+#    profile: cloud/azure-ja  # null: use transcription.active.
+#    output_dir: 'C:\path\to\transcripts\{year}'
+#    archive:  # Optional. Without it, files are transcribed in place and kept.
+#      dir: 'C:\path\to\recordings\{year}'
+#      name: created-time  # created-time: 20260102T030405+0900.flac / original
+#      delete_source: false  # true: remove the input file after a verified copy
+#                            # and a successful transcription.
 
 folders:
   # Root for source-name/hash folders containing audio.flac and transcripts.

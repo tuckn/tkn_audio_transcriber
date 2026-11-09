@@ -13,6 +13,7 @@ from .config import (
     ResolvedConfig,
     default_user_config_path,
     initialize_user_config,
+    load_input_sources,
     migrate_config_file,
     resolve_config,
 )
@@ -273,6 +274,29 @@ def _parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="Plan without generation or writes."
     )
 
+    pull = commands.add_parser(
+        "pull",
+        help="Archive and transcribe new media files from the configured sources.",
+    )
+    pull.add_argument("--config", type=Path, default=argparse.SUPPRESS, help=config_help)
+    pull.add_argument(
+        "source_names", nargs="*", metavar="SOURCE",
+        help="Configured source names (default: every configured source).",
+    )
+    pull.add_argument(
+        "--allow-cloud-upload",
+        action="store_true",
+        help=(
+            "Approve uploading FLAC audio for this run only, for sources with a cloud profile; "
+            "cannot be saved in config."
+        ),
+    )
+    pull.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="List files and planned archive and output paths without writing.",
+    )
+
     validate = commands.add_parser("validate", help="Validate output hashes and manifest.")
     validate.add_argument("manifest", type=Path, help="Transcript manifest JSON.")
     validate.add_argument(
@@ -500,6 +524,34 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             show(payload)
             return 0
+        if args.command == "pull":
+            from .pull import run_pull, select_sources
+
+            if args.profile is not None:
+                parser.error("pull uses each source's profile; remove --profile")
+            # The active profile is not used here, so it is not resolved either.
+            selected = select_sources(
+                load_input_sources(cwd=Path.cwd(), explicit_config=args.config),
+                args.source_names,
+            )
+            warned: list[bool] = []
+
+            def resolve_for_source(profile: str | None, output_dir: str | None) -> ResolvedConfig:
+                resolved = resolve_config(
+                    cwd=Path.cwd(), explicit_config=args.config, profile=profile,
+                    cli_overrides={"output_dir": output_dir},
+                )
+                if not warned:
+                    warned.append(True)
+                    _warn_in_memory_migrations(resolved, logger)
+                return resolved
+
+            payload = run_pull(
+                selected, resolve=resolve_for_source, logger=logger,
+                allow_cloud_upload=args.allow_cloud_upload, dry_run=args.dry_run,
+            )
+            show(payload)
+            return 2 if payload["failures_count"] else 0
         if args.command == "validate":
             show(validate_artifact(args.manifest, verify_source=args.verify_source))
             return 0

@@ -44,6 +44,7 @@ def output_paths(
         srt=directory / f"{stem}.srt",
         jsonl=directory / f"{stem}.jsonl",
         manifest=directory / f"{stem}.manifest.json",
+        text=directory / f"{stem}.txt",
     )
 
 

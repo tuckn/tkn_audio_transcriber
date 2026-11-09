@@ -80,7 +80,7 @@ def test_all_commands_share_output_contract(
         "audio_transcriber.phrase_suggestions.suggest_phrases", lambda *a, **kw: payload
     )
     paths = OutputPaths(
-        *(tmp_path / name for name in ("a.flac", "a.md", "a.srt", "a.jsonl", "a.json"))
+        *(tmp_path / name for name in ("a.flac", "a.md", "a.srt", "a.jsonl", "a.json", "a.txt"))
     )
     transcription = TranscriptionResult("planned", tmp_path / "audio.wav", "abc", paths, 0)
     monkeypatch.setattr(cli.TranscriptionPipeline, "transcribe", lambda *a, **kw: transcription)

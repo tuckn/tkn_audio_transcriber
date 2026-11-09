@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from copy import deepcopy
@@ -17,8 +18,11 @@ from .phrase_files import read_phrase_files, validate_phrase
 from .yaml_format import StringDateLoader, dump_yaml
 
 APPLICATION_ID = "audio_transcriber"
-SCHEMA_VERSION = "3.1.0"
-_SCHEMA_VERSION_PARTS = (3, 1, 0)
+SCHEMA_VERSION = "3.2.0"
+_SCHEMA_VERSION_PARTS = (3, 2, 0)
+# `sources` was added in schema 3.2.0; an older declared version cannot use it.
+SOURCES_SCHEMA_VERSION = "3.2.0"
+SOURCES_MINIMUM_MINOR = 2
 _SCHEMA_VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 CONFIG_EXAMPLE_RESOURCE = "resources/config.example.yaml"
 
@@ -181,6 +185,18 @@ BUILT_IN_CONFIG: dict[str, Any] = {
 }
 
 TOP_LEVEL_KEYS = {"transcription", "folders", "processing", "generation"}
+SOURCES_KEY = "sources"
+V3_TOP_LEVEL_KEYS = {*TOP_LEVEL_KEYS, SOURCES_KEY}
+SOURCE_KEYS = {"input_dir", "include", "min_age_seconds", "profile", "output_dir", "archive"}
+SOURCE_ARCHIVE_KEYS = {"dir", "name", "delete_source"}
+SOURCE_ARCHIVE_NAMES = ("created-time", "original")
+DEFAULT_SOURCE_INCLUDE = (
+    "*.flac", "*.m4a", "*.mp3", "*.wav", "*.wma", "*.aac", "*.ogg", "*.opus",
+)
+DEFAULT_SOURCE_MIN_AGE_SECONDS = 30
+SOURCE_PATH_PLACEHOLDERS = {"year"}
+_SOURCE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_PLACEHOLDER_PATTERN = re.compile(r"\{([^{}]*)\}")
 TRANSCRIPTION_KEYS = {"active", LOCAL_MODE, CLOUD_MODE}
 ACTIVE_KEYS = {"mode", "profile"}
 BACKEND_KEYS = {"provider", "profiles"}
@@ -303,6 +319,45 @@ type TranscriptionConfig = LocalTranscriptionConfig | AzureSpeechTranscriptionCo
 
 
 @dataclass(frozen=True)
+class SourceArchiveConfig:
+    # Absolute path template; `{year}` is replaced per file.
+    directory: str
+    name: Literal["created-time", "original"]
+    delete_source: bool
+
+
+@dataclass(frozen=True)
+class SourceConfig:
+    """A folder whose new media files `pull` archives and transcribes."""
+
+    name: str
+    input_dir: Path
+    include: tuple[str, ...]
+    min_age_seconds: int
+    profile: str | None
+    # Absolute path template; `{year}` is replaced per file.
+    output_dir: str
+    archive: SourceArchiveConfig | None
+    defined_in: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "input_dir": str(self.input_dir),
+            "include": list(self.include),
+            "min_age_seconds": self.min_age_seconds,
+            "profile": self.profile,
+            "output_dir": self.output_dir,
+            "archive": None if self.archive is None else {
+                "dir": self.archive.directory,
+                "name": self.archive.name,
+                "delete_source": self.archive.delete_source,
+            },
+            "defined_in": self.defined_in,
+        }
+
+
+@dataclass(frozen=True)
 class ResolvedConfig:
     values: dict[str, Any]
     sources: dict[str, str]
@@ -318,6 +373,8 @@ class ResolvedConfig:
     phrase_file_sources: tuple[dict[str, Any], ...] = ()
     generation: dict[str, Any] = field(default_factory=dict)
     generation_sources: dict[str, str] = field(default_factory=dict)
+    # Configured `sources` entries (input folders for `pull`), not value origins.
+    input_sources: tuple[SourceConfig, ...] = ()
 
     @property
     def has_in_memory_migrations(self) -> bool:
@@ -365,6 +422,7 @@ class ResolvedConfig:
             "phrase_files": list(self.phrase_file_sources),
             "generation": self.generation,
             "generation_sources": self.generation_sources,
+            "sources": [source.to_dict() for source in self.input_sources],
         }
 
 
@@ -654,8 +712,81 @@ def _validate_backend_layer(value: Any, *, mode: str, path: Path) -> None:
         )
 
 
+def _validate_path_template(value: Any, label: str, path: Path, *, placeholders: bool) -> None:
+    _require_type(value, str, label, path)
+    if not value.strip() or "\x00" in value:
+        raise ConfigError(f"{label} must be a non-empty path in {path}")
+    names = set(_PLACEHOLDER_PATTERN.findall(value))
+    allowed = SOURCE_PATH_PLACEHOLDERS if placeholders else set()
+    unknown = sorted(names - allowed)
+    if unknown:
+        accepted = ", ".join("{" + name + "}" for name in sorted(allowed)) or "none"
+        raise ConfigError(
+            f"{label} uses unsupported placeholder(s) "
+            f"{', '.join('{' + name + '}' for name in unknown)} in {path}; accepted: {accepted}"
+        )
+    if "{" in _PLACEHOLDER_PATTERN.sub("", value) or "}" in _PLACEHOLDER_PATTERN.sub("", value):
+        raise ConfigError(f"{label} has an unbalanced brace in {path}")
+
+
+def _validate_sources(value: Any, path: Path) -> None:
+    sources = _mapping({} if value is None else value, SOURCES_KEY, path)
+    for raw_name, raw_source in sources.items():
+        if not isinstance(raw_name, str) or not _SOURCE_NAME_PATTERN.fullmatch(raw_name):
+            raise ConfigError(
+                f"Source names must start with a letter or digit and use only letters, "
+                f"digits, '.', '_', or '-' in {path}: {raw_name!r}"
+            )
+        if raw_source is None:
+            # A later layer may remove a source inherited from an earlier one.
+            continue
+        label = f"{SOURCES_KEY}.{raw_name}"
+        source = _mapping(raw_source, label, path)
+        _reject_unknown(source, SOURCE_KEYS, label, path)
+        for required in ("input_dir", "output_dir"):
+            if required not in source:
+                raise ConfigError(f"{label}.{required} is required in {path}")
+        _validate_path_template(source["input_dir"], f"{label}.input_dir", path, placeholders=False)
+        _validate_path_template(
+            source["output_dir"], f"{label}.output_dir", path, placeholders=True
+        )
+        if "include" in source:
+            include = source["include"]
+            if not isinstance(include, list) or not include or any(
+                not isinstance(pattern, str) or not pattern.strip() for pattern in include
+            ):
+                raise ConfigError(f"{label}.include must be a non-empty list of patterns in {path}")
+        if "min_age_seconds" in source:
+            _positive_integer(
+                source["min_age_seconds"], f"{label}.min_age_seconds", path, allow_zero=True
+            )
+        if "profile" in source and source["profile"] is not None:
+            _require_type(source["profile"], str, f"{label}.profile", path)
+            if not source["profile"].strip():
+                raise ConfigError(f"{label}.profile must not be empty in {path}")
+        if "archive" in source and source["archive"] is not None:
+            archive = _mapping(source["archive"], f"{label}.archive", path)
+            _reject_unknown(archive, SOURCE_ARCHIVE_KEYS, f"{label}.archive", path)
+            if "dir" not in archive:
+                raise ConfigError(f"{label}.archive.dir is required in {path}")
+            _validate_path_template(
+                archive["dir"], f"{label}.archive.dir", path, placeholders=True
+            )
+            if "name" in archive and archive["name"] not in SOURCE_ARCHIVE_NAMES:
+                raise ConfigError(
+                    f"{label}.archive.name must be one of "
+                    f"{', '.join(SOURCE_ARCHIVE_NAMES)} in {path}"
+                )
+            if "delete_source" in archive:
+                _require_type(
+                    archive["delete_source"], bool, f"{label}.archive.delete_source", path
+                )
+
+
 def _validate_v3_layer(value: dict[str, Any], path: Path) -> None:
-    _reject_unknown(value, TOP_LEVEL_KEYS, "root", path)
+    _reject_unknown(value, V3_TOP_LEVEL_KEYS, "root", path)
+    if SOURCES_KEY in value:
+        _validate_sources(value[SOURCES_KEY], path)
     if "transcription" in value:
         transcription = _mapping(value["transcription"], "transcription", path)
         _reject_unknown(transcription, TRANSCRIPTION_KEYS, "transcription", path)
@@ -855,6 +986,12 @@ def _load_yaml(path: Path) -> tuple[dict[str, Any], dict[str, Any], int]:
         except ConfigError as exc:
             raise ConfigError(f"Invalid config file {path}: {exc}") from exc
     else:
+        assert isinstance(raw_version, str)
+        if SOURCES_KEY in result and int(raw_version.split(".")[1]) < SOURCES_MINIMUM_MINOR:
+            raise ConfigError(
+                f"Invalid config file {path}: sources requires schema_version "
+                f'"{SOURCES_SCHEMA_VERSION}" or later; update schema_version first'
+            )
         try:
             _validate_v3_layer(result, path)
         except ConfigError as exc:
@@ -1191,6 +1328,101 @@ def _typed_transcription(
     )
 
 
+def _absolute_template(value: str, base: Path) -> str:
+    # Placeholders stay in the string; only the base directory is applied here.
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = base / path
+    return str(Path(os.path.normpath(path)))
+
+
+def _build_source(name: str, entry: dict[str, Any], base: Path, label: str) -> SourceConfig:
+    archive_entry = entry.get("archive")
+    archive = None
+    if archive_entry is not None:
+        archive = SourceArchiveConfig(
+            directory=_absolute_template(str(archive_entry["dir"]), base),
+            name=archive_entry.get("name", SOURCE_ARCHIVE_NAMES[0]),
+            delete_source=bool(archive_entry.get("delete_source", False)),
+        )
+    profile = entry.get("profile")
+    return SourceConfig(
+        name=name,
+        input_dir=Path(_absolute_template(str(entry["input_dir"]), base)),
+        include=tuple(entry.get("include", DEFAULT_SOURCE_INCLUDE)),
+        min_age_seconds=int(entry.get("min_age_seconds", DEFAULT_SOURCE_MIN_AGE_SECONDS)),
+        profile=None if profile is None else str(profile),
+        output_dir=_absolute_template(str(entry["output_dir"]), base),
+        archive=archive,
+        defined_in=label,
+    )
+
+
+def _apply_sources_layer(
+    sources: dict[str, SourceConfig], layer: Any, path: Path, label: str
+) -> None:
+    # A source entry replaces an inherited one as a whole and keeps its own
+    # config directory as the base for relative paths.
+    for name, entry in (layer or {}).items():
+        sources.pop(str(name), None)
+        if entry is not None:
+            sources[str(name)] = _build_source(str(name), entry, path.parent, label)
+
+
+def _config_candidates(
+    current_directory: Path, home_directory: Path, explicit_config: Path | None
+) -> list[tuple[Path, str, str, bool]]:
+    candidates: list[tuple[Path, str, str, bool]] = [
+        (
+            home_directory / ".tkn" / APPLICATION_ID / "config.yaml",
+            "user",
+            "user config",
+            False,
+        ),
+        (
+            current_directory / ".tkn" / "config.yaml",
+            "working_directory",
+            "working-directory config",
+            False,
+        ),
+    ]
+    if explicit_config is not None:
+        explicit_path = explicit_config.expanduser()
+        if not explicit_path.is_absolute():
+            explicit_path = current_directory / explicit_path
+        candidates.append(
+            (explicit_path.resolve(strict=False), "explicit", "explicit config", True)
+        )
+    return candidates
+
+
+def load_input_sources(
+    *, cwd: Path, explicit_config: Path | None = None, home: Path | None = None
+) -> tuple[SourceConfig, ...]:
+    """Read `sources` without resolving the active transcription profile.
+
+    `pull` uses each source's own profile, so an unused active profile that is
+    incomplete (for example a cloud profile without an endpoint) must not block it.
+    Each file is still validated as a whole.
+    """
+    current_directory = cwd.resolve()
+    home_directory = (home or Path.home()).resolve()
+    sources: dict[str, SourceConfig] = {}
+    for path, _kind, label, required in _config_candidates(
+        current_directory, home_directory, explicit_config
+    ):
+        if not path.exists():
+            if required:
+                raise ConfigError(f"Explicit config file not found: {path}")
+            continue
+        if not path.is_file():
+            raise ConfigError(f"Config path is not a file: {path}")
+        layer, _schema_report, schema_major = _load_yaml(path)
+        if schema_major >= 3:
+            _apply_sources_layer(sources, layer.get(SOURCES_KEY), path, f"{label}: {path}")
+    return tuple(sources.values())
+
+
 def _resolve_paths(values: dict[str, Any], cwd: Path) -> None:
     for key in PATH_KEYS:
         value = values[key]
@@ -1218,28 +1450,9 @@ def resolve_config(
     _record_sources(config, source_paths, "built-in default")
     loaded_files: list[Path] = []
     source_directories: dict[str, Path] = {"built-in default": current_directory}
+    media_sources: dict[str, SourceConfig] = {}
 
-    candidates: list[tuple[Path, str, str, bool]] = [
-        (
-            home_directory / ".tkn" / APPLICATION_ID / "config.yaml",
-            "user",
-            "user config",
-            False,
-        ),
-        (
-            current_directory / ".tkn" / "config.yaml",
-            "working_directory",
-            "working-directory config",
-            False,
-        ),
-    ]
-    if explicit_config is not None:
-        explicit_path = explicit_config.expanduser()
-        if not explicit_path.is_absolute():
-            explicit_path = current_directory / explicit_path
-        candidates.append(
-            (explicit_path.resolve(strict=False), "explicit", "explicit config", True)
-        )
+    candidates = _config_candidates(current_directory, home_directory, explicit_config)
 
     config_sources: list[dict[str, Any]] = [
         {
@@ -1276,6 +1489,7 @@ def resolve_config(
         elif schema_major == 2:
             _apply_v2_layer(config, layer, source_paths, source_label)
         else:
+            _apply_sources_layer(media_sources, layer.pop(SOURCES_KEY, None), path, source_label)
             _merge_config(config, layer, source_paths, source_label)
         loaded_files.append(path)
 
@@ -1364,6 +1578,7 @@ def resolve_config(
             ".".join(key[1:]): source
             for key, source in source_paths.items() if key[0] == "generation"
         },
+        input_sources=tuple(media_sources.values()),
     )
 
 

@@ -28,11 +28,14 @@ class OutputPaths:
     srt: Path
     jsonl: Path
     manifest: Path
+    # Body text only, without timestamps, for pasting into prompts.
+    text: Path
 
     def as_dict(self) -> dict[str, str]:
         return {
             "audio": str(self.audio),
             "markdown": str(self.markdown),
+            "text": str(self.text),
             "srt": str(self.srt),
             "jsonl": str(self.jsonl),
             "manifest": str(self.manifest),

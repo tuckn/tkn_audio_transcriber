@@ -50,7 +50,7 @@ from .io_utils import (
 from .job_state import JobTracker
 from .logging_config import log_success
 from .model_store import ensure_local_model
-from .models import Segment, TranscriptionResult
+from .models import OutputPaths, Segment, TranscriptionResult
 from .paths import job_directory, output_paths
 from .validation import (
     AUDIO_CONVERSION,
@@ -264,6 +264,11 @@ def _render_srt(segments: list[Segment]) -> str:
     return "\n".join(blocks)
 
 
+def _render_text(segments: list[Segment]) -> str:
+    # One recognized phrase per line; speaker labels stay because they are content.
+    return "".join(f"{_segment_text(segment, markdown=False)}\n" for segment in segments)
+
+
 def _render_jsonl(segments: list[Segment]) -> str:
     return "".join(json.dumps(segment.to_dict(), ensure_ascii=False) + "\n" for segment in segments)
 
@@ -284,7 +289,25 @@ def _default_azure_recognizer(
     return AzureSpeechFastAdapter(config=config, logger=logger)
 
 
-def _dry_run_plan(config: ResolvedConfig) -> dict[str, object]:
+def planned_outputs(
+    config: ResolvedConfig, source: Path, *, source_hash: str, source_size: int
+) -> tuple[str, OutputPaths]:
+    """Return the generation ID and output paths a run would use, without writing."""
+    output_dir = config.path("output_dir")
+    if output_dir is None:
+        raise ValidationError("folders.output is required. Set it in config or pass --output-dir.")
+    fingerprint = _fingerprint(source_hash, source_size, config)
+    return fingerprint, output_paths(
+        output_dir,
+        source,
+        mode=config.active_mode,
+        profile=config.active_profile,
+        source_hash=source_hash,
+        fingerprint=fingerprint,
+    )
+
+
+def dry_run_plan(config: ResolvedConfig) -> dict[str, object]:
     transcription = config.transcription
     if isinstance(transcription, AzureSpeechTranscriptionConfig):
         return {
@@ -433,7 +456,10 @@ class TranscriptionPipeline:
                     )
 
         existing_outputs = [
-            str(path) for path in (outputs.markdown, outputs.srt, outputs.jsonl, outputs.manifest)
+            str(path)
+            for path in (
+                outputs.markdown, outputs.text, outputs.srt, outputs.jsonl, outputs.manifest
+            )
             if path.exists()
         ]
         if existing_outputs and not overwrite:
@@ -450,7 +476,7 @@ class TranscriptionPipeline:
                 fingerprint=fingerprint,
                 outputs=outputs,
                 segment_count=0,
-                plan=_dry_run_plan(self.config),
+                plan=dry_run_plan(self.config),
             )
         if isinstance(transcription, AzureSpeechTranscriptionConfig) and not allow_cloud_upload:
             raise CloudUploadApprovalError(
@@ -729,11 +755,13 @@ class TranscriptionPipeline:
             )
             outputs.audio.parent.mkdir(parents=True, exist_ok=True)
             pending_markdown = outputs.markdown.with_name(f".{outputs.markdown.name}.pending")
+            pending_text = outputs.text.with_name(f".{outputs.text.name}.pending")
             pending_srt = outputs.srt.with_name(f".{outputs.srt.name}.pending")
             pending_jsonl = outputs.jsonl.with_name(f".{outputs.jsonl.name}.pending")
             atomic_write_text(
                 pending_markdown, _render_markdown(source_path, self.config, segments)
             )
+            atomic_write_text(pending_text, _render_text(segments))
             atomic_write_text(pending_srt, _render_srt(segments))
             atomic_write_text(pending_jsonl, _render_jsonl(segments))
             if "## Transcript" not in pending_markdown.read_text(encoding="utf-8"):
@@ -759,6 +787,7 @@ class TranscriptionPipeline:
 
             for pending, final in (
                 (pending_markdown, outputs.markdown),
+                (pending_text, outputs.text),
                 (pending_srt, outputs.srt),
                 (pending_jsonl, outputs.jsonl),
             ):
@@ -774,6 +803,7 @@ class TranscriptionPipeline:
                 for label, path in (
                     ("audio", outputs.audio),
                     ("markdown", outputs.markdown),
+                    ("text", outputs.text),
                     ("srt", outputs.srt),
                     ("jsonl", outputs.jsonl),
                 )

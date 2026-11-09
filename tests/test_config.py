@@ -341,7 +341,10 @@ def test_packaged_example_has_hierarchical_complete_schema(tmp_path: Path) -> No
 
     assert text.splitlines()[0] == f'schema_version: "{SCHEMA_VERSION}"'
     assert loaded["schema_version"] == SCHEMA_VERSION
-    assert set(loaded) == {"schema_version", "transcription", "folders", "processing", "generation"}
+    assert set(loaded) == {
+        "schema_version", "sources", "transcription", "folders", "processing", "generation"
+    }
+    assert loaded["sources"] == {}
     assert loaded["transcription"]["active"] == {
         "mode": "local",
         "profile": "local-small",
@@ -467,4 +470,115 @@ def test_cloud_upload_approval_cannot_be_saved_in_config(tmp_path: Path) -> None
         encoding="utf-8",
     )
     with pytest.raises(ConfigError, match="Unknown config key"):
+        resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=config)
+
+
+def _write(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_sources_resolve_defaults_and_paths_relative_to_their_config(tmp_path: Path) -> None:
+    config = _write(
+        tmp_path / "configs" / "config.yaml",
+        'schema_version: "3.2.0"\n'
+        "sources:\n"
+        "  recordings:\n"
+        "    input_dir: inbox\n"
+        "    output_dir: 'out/{year}'\n"
+        "    archive:\n"
+        "      dir: 'archive/{year}'\n"
+        "  plain:\n"
+        "    input_dir: plain-inbox\n"
+        "    output_dir: plain-out\n"
+        "    include: ['*.wav']\n"
+        "    min_age_seconds: 0\n"
+        "    profile: local/local-small\n",
+    )
+    resolved = resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=config)
+    recordings, plain = resolved.input_sources
+    base = (tmp_path / "configs").resolve()
+
+    assert recordings.name == "recordings"
+    assert recordings.input_dir == base / "inbox"
+    assert recordings.output_dir == str(base / "out" / "{year}")
+    assert recordings.include[0] == "*.flac"
+    assert recordings.min_age_seconds == 30
+    assert recordings.profile is None
+    assert recordings.archive is not None
+    assert recordings.archive.directory == str(base / "archive" / "{year}")
+    assert recordings.archive.name == "created-time"
+    assert recordings.archive.delete_source is False
+    assert plain.include == ("*.wav",)
+    assert plain.min_age_seconds == 0
+    assert plain.profile == "local/local-small"
+    assert plain.archive is None
+    assert resolved.display()["sources"][0]["archive"]["name"] == "created-time"
+
+
+def test_later_config_replaces_or_removes_a_source_entry(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write(
+        home / ".tkn" / "audio_transcriber" / "config.yaml",
+        'schema_version: "3.2.0"\n'
+        "sources:\n"
+        "  keep:\n"
+        "    input_dir: a\n"
+        "    output_dir: b\n"
+        "    min_age_seconds: 5\n"
+        "  drop:\n"
+        "    input_dir: c\n"
+        "    output_dir: d\n",
+    )
+    explicit = _write(
+        tmp_path / "explicit.yaml",
+        'schema_version: "3.2.0"\n'
+        "sources:\n"
+        "  keep:\n"
+        "    input_dir: e\n"
+        "    output_dir: f\n"
+        "  drop:\n",
+    )
+    resolved = resolve_config(cwd=tmp_path, home=home, explicit_config=explicit)
+
+    assert [source.name for source in resolved.input_sources] == ["keep"]
+    keep = resolved.input_sources[0]
+    # The entry is replaced as a whole: the inherited min_age_seconds does not leak.
+    assert keep.min_age_seconds == 30
+    assert keep.input_dir == tmp_path.resolve() / "e"
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ("  bad name:\n    input_dir: a\n    output_dir: b\n", "Source names"),
+        ("  s:\n    output_dir: b\n", "input_dir is required"),
+        ("  s:\n    input_dir: a\n", "output_dir is required"),
+        ("  s:\n    input_dir: a\n    output_dir: 'b/{month}'\n", "unsupported placeholder"),
+        ("  s:\n    input_dir: 'a/{year}'\n    output_dir: b\n", "unsupported placeholder"),
+        ("  s:\n    input_dir: a\n    output_dir: 'b/{year'\n", "unbalanced brace"),
+        ("  s:\n    input_dir: a\n    output_dir: b\n    include: []\n", "include"),
+        ("  s:\n    input_dir: a\n    output_dir: b\n    min_age_seconds: -1\n", "zero or greater"),
+        ("  s:\n    input_dir: a\n    output_dir: b\n    extra: 1\n", "Unknown config key"),
+        ("  s:\n    input_dir: a\n    output_dir: b\n    archive:\n      name: original\n",
+         "archive.dir is required"),
+        ("  s:\n    input_dir: a\n    output_dir: b\n    archive:\n      dir: c\n"
+         "      name: moved\n", "archive.name"),
+        ("  s:\n    input_dir: a\n    output_dir: b\n    archive:\n      dir: c\n"
+         "      delete_source: 'yes'\n", "delete_source"),
+    ],
+)
+def test_invalid_sources_are_rejected(tmp_path: Path, body: str, message: str) -> None:
+    config = _write(tmp_path / "config.yaml", f'schema_version: "3.2.0"\nsources:\n{body}')
+    with pytest.raises(ConfigError, match=message):
+        resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=config)
+
+
+def test_sources_require_schema_3_2(tmp_path: Path) -> None:
+    config = _write(
+        tmp_path / "config.yaml",
+        'schema_version: "3.1.0"\nsources:\n  s:\n    input_dir: a\n    output_dir: b\n',
+    )
+    with pytest.raises(ConfigError, match=r'sources requires schema_version "3\.2\.0"'):
         resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=config)

@@ -41,7 +41,7 @@ def test_unicode_full_audio_retained_after_cleanup_and_folder_move(tmp_path: Pat
     result = run(tmp_path, source)
     assert result.outputs.audio.parent.name == f"会議 その1_{sha256_file(source)[:12]}"
     assert result.outputs.audio.name == "audio.flac"
-    assert len(list(result.outputs.audio.parent.iterdir())) == 5
+    assert len(list(result.outputs.audio.parent.iterdir())) == 6
     manifest = json.loads(result.outputs.manifest.read_text(encoding="utf-8"))
     assert manifest["outputs"]["audio"] == {
         "path": "audio.flac", "size": result.outputs.audio.stat().st_size,

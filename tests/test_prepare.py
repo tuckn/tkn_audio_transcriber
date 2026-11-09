@@ -93,7 +93,7 @@ def test_prepare_produces_transcript_and_review_then_stops(
     assert result["transcription"]["status"] == "created"
     media = Path(result["transcription"]["outputs"]["audio"]).parent
     assert media.parent == tmp_path / "run"
-    assert len(list(media.iterdir())) == 6
+    assert len(list(media.iterdir())) == 7
     assert (media / "audio.flac").is_file()
     assert len(list((media / "vocabulary").iterdir())) == 4
     assert not (tmp_path / "run/transcript").exists()
