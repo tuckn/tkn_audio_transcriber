@@ -1,4 +1,4 @@
-schema_version: "3.2.0"
+schema_version: "3.3.0"
 
 # Folders whose new media files `pull` archives and transcribes. Relative paths
 # are relative to this config file. `{year}` is the year of the file's creation
@@ -12,7 +12,9 @@ sources: {}
 #    output_dir: 'C:\path\to\transcripts\{year}'
 #    archive:  # Optional. Without it, files are transcribed in place and kept.
 #      dir: 'C:\path\to\recordings\{year}'
-#      name: created-time  # created-time: 20260102T030405+0900.flac / original
+#      name: created-time  # created-time: 20260102T030405+0900.flac
+#                          # created-time-original: 20260102T030405+0900_Recording.flac
+#                          # original: Recording.flac
 #      delete_source: false  # true: remove the input file after a verified copy
 #                            # and a successful transcription.
 

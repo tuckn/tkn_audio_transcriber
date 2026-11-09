@@ -73,7 +73,7 @@ uv tool install .
 tkn-audio-transcriber --version
 ```
 
-`tkn-audio-transcriber 0.16.0` のようにパッケージのバージョンが表示されれば導入できています。コマンドとオプションは `tkn-audio-transcriber --help`、各コマンドの詳細は `tkn-audio-transcriber transcribe --help` などで確認できます。
+`tkn-audio-transcriber 0.17.0` のようにパッケージのバージョンが表示されれば導入できています。コマンドとオプションは `tkn-audio-transcriber --help`、各コマンドの詳細は `tkn-audio-transcriber transcribe --help` などで確認できます。
 
 ソースを更新した後は、同じフォルダで `uv tool install . --reinstall` を実行してください。
 
@@ -366,9 +366,10 @@ tkn-audio-transcriber transcribe "C:\path\to\recordings\2026\20260102T030405+090
 | 値 | 保管名 | 向いている場合 |
 | --- | --- | --- |
 | `created-time`（既定） | 作成日時。例: `20260102T030405+0900.flac` | サウンドレコーダーのように毎回同じ名前（`Recording.flac`）で保存するアプリ |
+| `created-time-original` | 作成日時、`_`、元のファイル名。例: `20260102T030405+0900_Recording.flac` | 作成日時の順に並べつつ、元の名前も残したい場合 |
 | `original` | 元のファイル名 | 元の名前に意味がある場合 |
 
-同じ保管名で内容の違うファイルがすでにあれば、`20260102T030405+0900-2.flac` のように番号を付け、既存のファイルは上書きしません。保管先を入力フォルダと同じにはできません。
+同じ保管名で内容の違うファイルがすでにあれば、`20260102T030405+0900-2.flac`（`created-time-original` なら `20260102T030405+0900_Recording-2.flac`）のように番号を付け、既存のファイルは上書きしません。保管先を入力フォルダと同じにはできません。
 
 作成日時は、記録できるOS（Windowsなど）ではファイルの作成日時、記録できないOSでは更新日時です。サウンドレコーダーでは作成日時が録音の開始時刻になります。保管名と `{year}` はこの日時を使います。
 
@@ -634,7 +635,7 @@ tkn-audio-transcriber model download small --dry-run
 実際の Speech リソース名は、ユーザー設定または Git から除外した作業ディレクトリ設定に保存します。次は Azure 実行に必要な設定の抜粋です。既存の設定は残し、`endpoint` のプレースホルダーを自分の Speech リソースの URL に置き換えてください。
 
 ```yaml
-schema_version: "3.2.0"
+schema_version: "3.3.0"
 transcription:
   active:
     mode: cloud
@@ -791,12 +792,12 @@ Azure error時に`faster-whisper`へfallbackしません。
 
 ## 入力フォルダを設定する（sources）
 
-[`pull`](#pull) が処理する入力フォルダは、設定の `sources` に名前を付けて書きます。入力フォルダごとに、出力先、プロファイル、原本の保管先を決められます。`sources` は設定schema `"3.2.0"` で追加しました。使うときは、その設定ファイルの `schema_version` を `"3.2.0"` 以上にしてください。
+[`pull`](#pull) が処理する入力フォルダは、設定の `sources` に名前を付けて書きます。入力フォルダごとに、出力先、プロファイル、原本の保管先を決められます。`sources` は設定schema `"3.2.0"` で追加しました。使うときは、その設定ファイルの `schema_version` を `"3.2.0"` 以上にしてください。`archive.name: created-time-original` は `"3.3.0"` で追加したため、使うときは `"3.3.0"` 以上にしてください。
 
 次は、サウンドレコーダーの録音を保管してからAzureで文字起こしし、成功したら録音フォルダから消す例です。パスは自分の環境に置き換えてください。
 
 ```yaml
-schema_version: "3.2.0"
+schema_version: "3.3.0"
 
 sources:
   recordings:
@@ -819,7 +820,7 @@ sources:
 | `min_age_seconds` | | `30` | 最終更新からこの秒数がたっていないファイルを飛ばす |
 | `profile` | | `transcription.active` | 使うプロファイル（`MODE/NAME`） |
 | `archive.dir` | `archive` を書くとき○ | | 原本の保管先 |
-| `archive.name` | | `created-time` | 保管名。`created-time` または `original` |
+| `archive.name` | | `created-time` | 保管名。`created-time`、`created-time-original`、`original` のいずれか |
 | `archive.delete_source` | | `false` | `true` なら、保管と文字起こしの成功後に入力ファイルを消す |
 
 - `output_dir` と `archive.dir` には `{year}` を書けます。ファイルの作成日時の年（例: `2026`）に置き換わります。ほかの `{...}` はerrorです。
@@ -843,14 +844,14 @@ unknown key、不正type、未対応`schema_version`はerrorです。
 `schema_version`は上位sourceから上書きする設定値ではなくsource metadataとして扱います。
 `config list`では選択profile、利用可能profile、各effective値のsource、各設定sourceのschema状態を確認できます。
 
-application-owned設定の独立したschema versionは`"3.2.0"`です。
+application-owned設定の独立したschema versionは`"3.3.0"`です。
 3要素のstringを必須とします。
-既存の`3.0.x`・`3.1.x`設定は編集不要で、構造を変えない新しいPatch（例: `"3.2.7"`）も受け付けます。`sources` を使う設定ファイルだけは`"3.2.0"`以上が必要です。
+既存の`3.0.x`・`3.1.x`・`3.2.x`設定は編集不要で、構造を変えない新しいPatch（例: `"3.3.7"`）も受け付けます。`sources` を使う設定ファイルは`"3.2.0"`以上、`archive.name: created-time-original` を使う設定ファイルは`"3.3.0"`以上が必要です。
 新しいMinor/Major、検証済み移行がない古いversion、不正形式、version欠落は、必要なactionを示すerrorになります。
 
 平坦な`1.0.x`、`1.1.x`、旧integer `schema_version: 1`、混在profile形式の`2.0.x`はin-memoryでlocal/cloud分離構造へ変換して読み取り、warningを表示します。
 読み取りだけではfileを書き換えません。
-schema 1・2に`config migrate`を実行すると、validation、backup、atomic replacementを経てschema `"3.2.0"`を永続化します。
+schema 1・2に`config migrate`を実行すると、validation、backup、atomic replacementを経てschema `"3.3.0"`を永続化します。
 
 ## 再実行と失敗時の動作
 

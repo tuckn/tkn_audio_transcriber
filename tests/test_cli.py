@@ -145,8 +145,8 @@ def test_config_list_outputs_machine_readable_json(
     assert main(["config", "list", "--json"]) == 0
     captured = capsys.readouterr()  # type: ignore[attr-defined]
     payload = json.loads(captured.out)
-    assert payload["schema_version"] == "3.2.0"
-    assert payload["effective_schema_version"] == "3.2.0"
+    assert payload["schema_version"] == "3.3.0"
+    assert payload["effective_schema_version"] == "3.3.0"
     assert payload["has_in_memory_migrations"] is False
     assert payload["active_mode"] == "local"
     assert payload["active_profile"] == "local-small"
@@ -154,8 +154,8 @@ def test_config_list_outputs_machine_readable_json(
         "kind": "built_in",
         "path": None,
         "exists": True,
-        "schema_version": "3.2.0",
-        "effective_schema_version": "3.2.0",
+        "schema_version": "3.3.0",
+        "effective_schema_version": "3.3.0",
         "migration": None,
     }
     assert payload["values"]["model"]["value"] == "small"
@@ -373,7 +373,7 @@ def test_config_init_and_migrate_commands(
     assert main(["config", "init", str(target), "--json"]) == 0
     initialized = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
     assert initialized["status"] == "created"
-    assert target.read_text(encoding="utf-8").startswith('schema_version: "3.2.0"')
+    assert target.read_text(encoding="utf-8").startswith('schema_version: "3.3.0"')
 
     target.write_text("schema_version: 1\nlanguage: en\n", encoding="utf-8")
     assert main(["config", "migrate", str(target), "--dry-run", "--json"]) == 0
@@ -384,7 +384,7 @@ def test_config_init_and_migrate_commands(
     assert main(["config", "migrate", str(target), "--json"]) == 0
     migrated = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
     assert migrated["status"] == "migrated"
-    assert target.read_text(encoding="utf-8").startswith('schema_version: "3.2.0"')
+    assert target.read_text(encoding="utf-8").startswith('schema_version: "3.3.0"')
     assert Path(migrated["backup_path"]).is_file()
 
 

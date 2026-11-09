@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,16 +17,16 @@ from audio_transcriber.errors import CloudUploadApprovalError, ValidationError
 from audio_transcriber.io_utils import sha256_file
 from audio_transcriber.models import TranscriptionResult
 from audio_transcriber.pipeline import TranscriptionPipeline
-from audio_transcriber.pull import ARCHIVE_NAME_FORMAT, created_at, run_pull
+from audio_transcriber.pull import ARCHIVE_NAME_FORMAT, archive_name, created_at, run_pull
 from audio_transcriber.validation import validate_artifact
 
 ENDPOINT = "https://example.cognitiveservices.azure.com/"
 
 
-def _config_file(tmp_path: Path, source_body: str) -> Path:
+def _config_file(tmp_path: Path, source_body: str, *, schema: str = "3.2.0") -> Path:
     path = tmp_path / "config.yaml"
     path.write_text(
-        'schema_version: "3.2.0"\n'
+        f'schema_version: "{schema}"\n'
         "sources:\n"
         "  recordings:\n"
         "    input_dir: inbox\n"
@@ -207,6 +208,40 @@ def test_original_name_is_kept_when_configured(tmp_path: Path) -> None:
         tmp_path, _config_file(tmp_path, ARCHIVE + "      name: original\n")
     )
     assert Path(payload["items"][0]["archive_path"]).name == "Recording.flac"
+
+
+@pytest.mark.parametrize(
+    ("naming", "expected"),
+    [
+        ("created-time", "20260102T030405+0900.flac"),
+        ("created-time-original", "20260102T030405+0900_Recording (2).flac"),
+        ("original", "Recording (2).flac"),
+    ],
+)
+def test_archive_name_modes(naming: str, expected: str) -> None:
+    moment = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone(timedelta(hours=9)))
+    assert archive_name(naming, Path("Recording (2).flac"), moment) == expected
+
+
+def test_created_time_and_original_name_when_configured(tmp_path: Path) -> None:
+    source = _recording(tmp_path)
+    moment = created_at(source.stat())
+    stamp = moment.strftime(ARCHIVE_NAME_FORMAT)
+    taken = tmp_path / "archive" / str(moment.year) / f"{stamp}_Recording.flac"
+    taken.parent.mkdir(parents=True)
+    taken.write_bytes(b"a different recording")
+    config_file = _config_file(
+        tmp_path, ARCHIVE + "      name: created-time-original\n", schema="3.3.0"
+    )
+
+    payload = _pull(tmp_path, config_file)
+
+    item = payload["items"][0]
+    archived = Path(item["archive_path"])
+    assert archived.name == f"{stamp}_Recording-2.flac"
+    assert item["source_deleted"] is True
+    assert taken.read_bytes() == b"a different recording"
+    assert Path(item["outputs"]["text"]).parent.name.startswith(f"{stamp}_Recording-2_")
 
 
 def test_archive_in_the_input_folder_is_refused(tmp_path: Path) -> None:

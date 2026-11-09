@@ -582,3 +582,22 @@ def test_sources_require_schema_3_2(tmp_path: Path) -> None:
     )
     with pytest.raises(ConfigError, match=r'sources requires schema_version "3\.2\.0"'):
         resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=config)
+
+
+def test_created_time_original_archive_name_requires_schema_3_3(tmp_path: Path) -> None:
+    body = (
+        "sources:\n  s:\n    input_dir: a\n    output_dir: b\n"
+        "    archive:\n      dir: c\n      name: created-time-original\n"
+    )
+    old = _write(tmp_path / "old.yaml", f'schema_version: "3.2.0"\n{body}')
+    with pytest.raises(
+        ConfigError,
+        match=r'sources\.s\.archive\.name created-time-original requires schema_version "3\.3\.0"',
+    ):
+        resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=old)
+
+    new = _write(tmp_path / "new.yaml", f'schema_version: "3.3.0"\n{body}')
+    resolved = resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=new)
+    archive = resolved.input_sources[0].archive
+    assert archive is not None
+    assert archive.name == "created-time-original"

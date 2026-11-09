@@ -63,6 +63,16 @@ def created_at(stat: os.stat_result) -> datetime:
     return datetime.fromtimestamp(timestamp).astimezone()
 
 
+def archive_name(naming: str, path: Path, moment: datetime) -> str:
+    """File name for the archived copy of `path`, by the `archive.name` setting."""
+    if naming == "original":
+        return path.name
+    stamp = moment.strftime(ARCHIVE_NAME_FORMAT)
+    if naming == "created-time-original":
+        return f"{stamp}_{path.name}"
+    return stamp + path.suffix
+
+
 def _fill(template: str, moment: datetime) -> str:
     return template.replace("{year}", f"{moment.year:04d}")
 
@@ -287,11 +297,7 @@ def _process_file(
             raise ConfigError(
                 f"sources.{source.name}.archive.dir must differ from input_dir: {archive_dir}"
             )
-        name = (
-            path.name
-            if source.archive.name == "original"
-            else moment.strftime(ARCHIVE_NAME_FORMAT) + path.suffix
-        )
+        name = archive_name(source.archive.name, path, moment)
         archive_path, reused = _archive_destination(archive_dir, name, path, source_hash)
         transcribe_from = archive_path
         item["archive_path"] = str(archive_path)

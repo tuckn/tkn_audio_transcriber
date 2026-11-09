@@ -18,11 +18,15 @@ from .phrase_files import read_phrase_files, validate_phrase
 from .yaml_format import StringDateLoader, dump_yaml
 
 APPLICATION_ID = "audio_transcriber"
-SCHEMA_VERSION = "3.2.0"
-_SCHEMA_VERSION_PARTS = (3, 2, 0)
+SCHEMA_VERSION = "3.3.0"
+_SCHEMA_VERSION_PARTS = (3, 3, 0)
 # `sources` was added in schema 3.2.0; an older declared version cannot use it.
 SOURCES_SCHEMA_VERSION = "3.2.0"
 SOURCES_MINIMUM_MINOR = 2
+# `archive.name: created-time-original` was added in schema 3.3.0.
+ARCHIVE_NAME_CREATED_TIME_ORIGINAL = "created-time-original"
+ARCHIVE_NAME_CREATED_TIME_ORIGINAL_SCHEMA_VERSION = "3.3.0"
+ARCHIVE_NAME_CREATED_TIME_ORIGINAL_MINIMUM_MINOR = 3
 _SCHEMA_VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 CONFIG_EXAMPLE_RESOURCE = "resources/config.example.yaml"
 
@@ -189,7 +193,7 @@ SOURCES_KEY = "sources"
 V3_TOP_LEVEL_KEYS = {*TOP_LEVEL_KEYS, SOURCES_KEY}
 SOURCE_KEYS = {"input_dir", "include", "min_age_seconds", "profile", "output_dir", "archive"}
 SOURCE_ARCHIVE_KEYS = {"dir", "name", "delete_source"}
-SOURCE_ARCHIVE_NAMES = ("created-time", "original")
+SOURCE_ARCHIVE_NAMES = ("created-time", ARCHIVE_NAME_CREATED_TIME_ORIGINAL, "original")
 DEFAULT_SOURCE_INCLUDE = (
     "*.flac", "*.m4a", "*.mp3", "*.wav", "*.wma", "*.aac", "*.ogg", "*.opus",
 )
@@ -322,7 +326,7 @@ type TranscriptionConfig = LocalTranscriptionConfig | AzureSpeechTranscriptionCo
 class SourceArchiveConfig:
     # Absolute path template; `{year}` is replaced per file.
     directory: str
-    name: Literal["created-time", "original"]
+    name: Literal["created-time", "created-time-original", "original"]
     delete_source: bool
 
 
@@ -783,6 +787,19 @@ def _validate_sources(value: Any, path: Path) -> None:
                 )
 
 
+def _sources_with_archive_name(sources: object, archive_name: str) -> list[str]:
+    """Names of already validated sources whose archive uses `archive_name`."""
+    if not isinstance(sources, dict):
+        return []
+    return [
+        name
+        for name, source in sources.items()
+        if isinstance(source, dict)
+        and isinstance(source.get("archive"), dict)
+        and source["archive"].get("name") == archive_name
+    ]
+
+
 def _validate_v3_layer(value: dict[str, Any], path: Path) -> None:
     _reject_unknown(value, V3_TOP_LEVEL_KEYS, "root", path)
     if SOURCES_KEY in value:
@@ -996,6 +1013,17 @@ def _load_yaml(path: Path) -> tuple[dict[str, Any], dict[str, Any], int]:
             _validate_v3_layer(result, path)
         except ConfigError as exc:
             raise ConfigError(f"Invalid config file {path}: {exc}") from exc
+        if int(raw_version.split(".")[1]) < ARCHIVE_NAME_CREATED_TIME_ORIGINAL_MINIMUM_MINOR:
+            names = _sources_with_archive_name(
+                result.get(SOURCES_KEY), ARCHIVE_NAME_CREATED_TIME_ORIGINAL
+            )
+            if names:
+                raise ConfigError(
+                    f"Invalid config file {path}: sources.{names[0]}.archive.name "
+                    f"{ARCHIVE_NAME_CREATED_TIME_ORIGINAL} requires schema_version "
+                    f'"{ARCHIVE_NAME_CREATED_TIME_ORIGINAL_SCHEMA_VERSION}" or later; '
+                    "update schema_version first"
+                )
     return result, schema_report, schema_major
 
 

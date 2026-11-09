@@ -8,6 +8,13 @@
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-09
+
+### Added
+
+- `sources` の `archive.name` に `created-time-original` を追加しました。保管名を、作成日時と元のファイル名をつないだ名前（例: `20260102T030405+0900_Recording.flac`）にします。文字起こしの成果物のフォルダ名も、この保管名から作ります。
+- 設定schemaを `3.3.0` にしました。`created-time-original` を使う設定ファイルは `schema_version: "3.3.0"` 以上にしてください。既存の `3.0.x`～`3.2.x` の設定は編集せずに使えます。manifest schemaは変更しません。更新後は `uv tool install . --reinstall` を実行してください。
+
 ## [0.16.0] - 2026-11-09
 
 ### Added
