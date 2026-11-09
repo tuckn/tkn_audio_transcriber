@@ -73,7 +73,7 @@ uv tool install .
 tkn-audio-transcriber --version
 ```
 
-`tkn-audio-transcriber 0.17.0` のようにパッケージのバージョンが表示されれば導入できています。コマンドとオプションは `tkn-audio-transcriber --help`、各コマンドの詳細は `tkn-audio-transcriber transcribe --help` などで確認できます。
+`tkn-audio-transcriber 0.18.0` のようにパッケージのバージョンが表示されれば導入できています。コマンドとオプションは `tkn-audio-transcriber --help`、各コマンドの詳細は `tkn-audio-transcriber transcribe --help` などで確認できます。
 
 ソースを更新した後は、同じフォルダで `uv tool install . --reinstall` を実行してください。
 
@@ -341,15 +341,20 @@ tkn-audio-transcriber pull --allow-cloud-upload
 
 # 名前を指定すると、その source だけを処理する
 tkn-audio-transcriber pull recordings --allow-cloud-upload
+
+# 録音を止めた直後に、min_age_seconds を待たずに処理する
+tkn-audio-transcriber pull --allow-cloud-upload --ignore-min-age
 ```
 
 1ファイルごとに、次の順で処理します。
 
 1. 入力フォルダの直下にあり、`include` のパターンに合うファイルを、作成日時の古い順に選ぶ。名前が `.` で始まるファイルとフォルダは対象外。
-2. 最終更新から `min_age_seconds` 秒たっていないファイルは、録音中または書き込み中とみなして飛ばす（`status=skipped`）。
+2. 最終更新から `min_age_seconds` 秒たっていないファイルは、録音中または書き込み中とみなして飛ばす（`status=skipped`）。`--ignore-min-age` を付けると、その回だけ、この確認をせずに処理する。
 3. `archive` があれば、原本を保管先へコピーし、サイズとSHA-256を照合する。保管先に同じ内容のファイルがあれば、コピーせずに使う。ただし、入力ファイルへのシンボリックリンクやハードリンクは、別のコピーとみなさない。
 4. 保管したコピー（`archive` がなければ入力ファイル）を、source の profile で文字起こしする。manifest の元パスは保管したコピーになる。
 5. `delete_source: true` なら、文字起こしが成功し、入力ファイルが保管時から変わっていないことを確かめてから、入力ファイルを消す。Windowsでは、ほかのプログラムが開けない状態でファイルを開き、そのまま照合して消すため、照合から削除までの間に書き足されることはない。録音アプリなどがまだファイルを開いていれば、消さずに残す。Windows以外では、照合と削除の間の書き込みまでは防げない。
+
+`pull` は待たずに終わるため、`min_age_seconds` 内のファイルは次の `pull` で処理します。録音を止めてすぐに処理したいときは `--ignore-min-age` を付けます。録音アプリが書き込みを終える前に付けると、途中までの録音を保管・文字起こしします。この場合、Windowsでは、録音アプリがファイルを開いている間は入力ファイルを消さずに残しますが、途中までの保管コピーと成果物は残ります。
 
 途中で失敗したファイルは入力フォルダに残ります。同じ `pull` を再実行すると、保管済みのコピーと、文字起こしの途中状態を再利用して続きから進めます。1件の失敗で他のファイルの処理は止めません。
 
@@ -817,7 +822,7 @@ sources:
 | `input_dir` | ○ | | 新しいファイルを探すフォルダ。直下だけを見る |
 | `output_dir` | ○ | | 文字起こしの保存先ルート。`--output-dir` と同じ扱い |
 | `include` | | 主な音声形式（`*.flac`、`*.m4a`、`*.mp3`、`*.wav`、`*.wma`、`*.aac`、`*.ogg`、`*.opus`） | 対象にするファイル名のパターン。大文字と小文字を区別しない |
-| `min_age_seconds` | | `30` | 最終更新からこの秒数がたっていないファイルを飛ばす |
+| `min_age_seconds` | | `30` | 最終更新からこの秒数がたっていないファイルを飛ばす。`pull --ignore-min-age` の回は使わない |
 | `profile` | | `transcription.active` | 使うプロファイル（`MODE/NAME`） |
 | `archive.dir` | `archive` を書くとき○ | | 原本の保管先 |
 | `archive.name` | | `created-time` | 保管名。`created-time`、`created-time-original`、`original` のいずれか |

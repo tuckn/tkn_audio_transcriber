@@ -296,6 +296,14 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List files and planned archive and output paths without writing.",
     )
+    pull.add_argument(
+        "--ignore-min-age",
+        action="store_true",
+        help=(
+            "Also process files modified within each source's min_age_seconds; "
+            "use only after the recording app has finished writing."
+        ),
+    )
 
     validate = commands.add_parser("validate", help="Validate output hashes and manifest.")
     validate.add_argument("manifest", type=Path, help="Transcript manifest JSON.")
@@ -549,6 +557,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = run_pull(
                 selected, resolve=resolve_for_source, logger=logger,
                 allow_cloud_upload=args.allow_cloud_upload, dry_run=args.dry_run,
+                ignore_min_age=args.ignore_min_age,
             )
             show(payload)
             return 2 if payload["failures_count"] else 0

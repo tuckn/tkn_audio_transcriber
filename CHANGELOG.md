@@ -8,6 +8,12 @@
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-10
+
+### Added
+
+- `pull` に `--ignore-min-age` を追加しました。その回だけ、source の `min_age_seconds` を使わず、最終更新から間もないファイルも処理します。録音を止めた直後に処理したいときに使います。結果に `ignore_min_age` を出します。更新後は `uv tool install . --reinstall` を実行してください。
+
 ## [0.17.0] - 2026-11-09
 
 ### Added

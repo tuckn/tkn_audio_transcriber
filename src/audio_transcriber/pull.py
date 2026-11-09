@@ -345,6 +345,7 @@ def run_pull(
     logger: logging.Logger,
     allow_cloud_upload: bool,
     dry_run: bool,
+    ignore_min_age: bool = False,
     pipeline_factory: PipelineFactory = _default_pipeline,
     clock: Callable[[], float] = time.time,
 ) -> dict[str, Any]:
@@ -383,7 +384,7 @@ def run_pull(
             try:
                 stat = path.stat()
                 age = clock() - stat.st_mtime
-                if age < source.min_age_seconds:
+                if not ignore_min_age and age < source.min_age_seconds:
                     item["status"] = "skipped"
                     item["reason"] = "recently_modified"
                     item["age_seconds"] = max(0, int(age))
@@ -415,6 +416,7 @@ def run_pull(
     return {
         "status": status,
         "dry_run": dry_run,
+        "ignore_min_age": ignore_min_age,
         "sources": [source.name for source in sources],
         "items": items,
         "planned_count": counts["planned"],

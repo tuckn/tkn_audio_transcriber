@@ -155,6 +155,18 @@ def test_pull_skips_files_that_are_still_being_written(tmp_path: Path) -> None:
     assert not (tmp_path / "out").exists()
 
 
+def test_pull_ignore_min_age_processes_recently_modified_files(tmp_path: Path) -> None:
+    source = _recording(tmp_path, age=0)
+    payload = _pull(tmp_path, _config_file(tmp_path, ARCHIVE), ignore_min_age=True)
+
+    assert payload["status"] == "completed"
+    assert payload["ignore_min_age"] is True
+    assert payload["skipped_count"] == 0
+    assert payload["transcribed_count"] == 1
+    assert payload["items"][0]["source_deleted"] is True
+    assert not source.exists()
+
+
 def test_pull_ignores_files_that_do_not_match_include(tmp_path: Path) -> None:
     _recording(tmp_path, "notes.txt")
     _recording(tmp_path, ".Recording.flac")
@@ -367,6 +379,24 @@ def test_cli_pull_dry_run(
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "planned"
     assert payload["sources"] == ["recordings"]
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"), [([], "skipped"), (["--ignore-min-age"], "planned")]
+)
+def test_cli_pull_ignore_min_age_includes_recently_modified_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    flags: list[str], expected: str,
+) -> None:
+    _cli_env(tmp_path, monkeypatch)
+    _recording(tmp_path, age=0)
+    config_file = _config_file(tmp_path, ARCHIVE)
+
+    arguments = ["pull", "--config", str(config_file), "--dry-run", *flags, "--json"]
+    assert main(arguments) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ignore_min_age"] is bool(flags)
+    assert [item["status"] for item in payload["items"]] == [expected]
 
 
 def test_cli_pull_returns_2_when_a_file_fails(
