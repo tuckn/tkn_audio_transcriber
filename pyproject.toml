@@ -18,7 +18,7 @@ dependencies = [
   "huggingface-hub>=0.30.0,<2",
   "httpx>=0.28.1,<1",
   "PyYAML>=6.0.2,<7",
-  "tkn-genai-bridge @ https://github.com/tuckn/tkn_genai_bridge/archive/24d9d6c1ff75c2cc5ca0a0fe3ad5c455219d8bce.zip",
+  "tkn-genai-bridge @ https://github.com/tuckn/tkn_genai_bridge/archive/27ac8e48c8038ee86e029f5b845cd41f6da121af.zip",
 ]
 
 [project.scripts]

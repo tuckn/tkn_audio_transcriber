@@ -2364,7 +2364,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1,<1" },
     { name = "huggingface-hub", specifier = ">=0.30.0,<2" },
     { name = "pyyaml", specifier = ">=6.0.2,<7" },
-    { name = "tkn-genai-bridge", url = "https://github.com/tuckn/tkn_genai_bridge/archive/24d9d6c1ff75c2cc5ca0a0fe3ad5c455219d8bce.zip" },
+    { name = "tkn-genai-bridge", url = "https://github.com/tuckn/tkn_genai_bridge/archive/27ac8e48c8038ee86e029f5b845cd41f6da121af.zip" },
 ]
 
 [package.metadata.requires-dev]
@@ -2377,8 +2377,8 @@ dev = [
 
 [[package]]
 name = "tkn-genai-bridge"
-version = "0.10.0"
-source = { url = "https://github.com/tuckn/tkn_genai_bridge/archive/24d9d6c1ff75c2cc5ca0a0fe3ad5c455219d8bce.zip" }
+version = "0.11.0"
+source = { url = "https://github.com/tuckn/tkn_genai_bridge/archive/27ac8e48c8038ee86e029f5b845cd41f6da121af.zip" }
 dependencies = [
     { name = "azure-identity" },
     { name = "httpx" },
@@ -2389,7 +2389,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "referencing" },
 ]
-sdist = { hash = "sha256:b730f33a33f7d0e1baada66dcae72badfa8b15f54964364cf2e5f0b43be0bf87" }
+sdist = { hash = "sha256:2e9633fb0377d75ca18dc598bb90c6b07fe3a3aa0b58dbe87adb7243ab3b7149" }
 
 [package.metadata]
 requires-dist = [
