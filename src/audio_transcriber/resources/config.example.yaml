@@ -1,4 +1,4 @@
-schema_version: "3.3.0"
+schema_version: "4.0.0"
 
 # Folders whose new media files `pull` archives and transcribes. Relative paths
 # are relative to this config file. `{year}` is the year of the file's creation
@@ -97,9 +97,32 @@ transcription:
           timeout_seconds: 600
           max_retries: 3
 
+# Generative AI connections for suggest-phrases, passed to tkn-genai-bridge as
+# its Profile settings. The shared tkn-genai-bridge config is not read. Layers
+# merge by name and field. CLI providers reuse their own sign-in; a relative
+# cli.executable is relative to this config file.
+genai_profiles:
+  codex-default:
+    provider: codex
+    model: null  # null: the provider's default model.
+  claude-default:
+    provider: claude-code
+    model: null
+  copilot-default:
+    provider: github-copilot
+    model: null
+  antigravity-default:
+    provider: antigravity
+    model: null
+#  codex-high:
+#    provider: codex
+#    model: gpt-6.2-sol
+#    reasoning_effort: high
+#    timeout_seconds: 1800
+
 generation:
   active_profile: codex
   profiles:
     codex:
-      bridge_profile: codex-default
+      genai_profile: codex-default  # A name in genai_profiles.
   max_candidates: 30

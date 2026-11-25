@@ -69,8 +69,12 @@ def workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             record=SimpleNamespace(model_dump=lambda **kwargs: {"status": "succeeded"}),
         )
 
+    def shared_bridge_config(*args: Any, **kwargs: Any) -> Profile:
+        pytest.fail("the shared tkn-genai-bridge config must not be read")
+
     monkeypatch.setattr("audio_transcriber.prepare.TranscriptionPipeline", pipeline)
-    monkeypatch.setattr("tkn_genai_bridge.load_profile", lambda name: Profile(provider="codex"))
+    monkeypatch.setattr("tkn_genai_bridge.load_profile", shared_bridge_config)
+    monkeypatch.setattr("tkn_genai_bridge.load_config", shared_bridge_config)
     monkeypatch.setattr(Runtime, "generate", generate)
     return state
 
@@ -141,7 +145,9 @@ def test_prepare_dry_run_never_transcribes_generates_or_writes(
     assert not workflow["ffmpeg"] and not workflow["azure"] and not workflow["generation"]
 
 
-@pytest.mark.parametrize("problem", ["context", "limit", "profile", "occupied"])
+@pytest.mark.parametrize(
+    "problem", ["context", "limit", "profile", "connection", "undefined", "occupied"]
+)
 def test_invalid_generation_inputs_fail_before_transcription(
     tmp_path: Path, workflow: dict[str, Any], problem: str
 ) -> None:
@@ -152,6 +158,12 @@ def test_invalid_generation_inputs_fail_before_transcription(
         kwargs["max_candidates"] = 0
     elif problem == "profile":
         kwargs["generation_profile"] = "missing"
+    elif problem in ("connection", "undefined"):
+        config = workflow["config"]
+        if problem == "connection":
+            config.genai_profiles["codex-default"]["timeout_seconds"] = "invalid"
+        else:
+            config.generation["profiles"]["codex"]["genai_profile"] = "codex-high"
     else:
         plan = run(workflow, dry_run=True)
         Path(plan["suggestions"]["output_dir"]).mkdir(parents=True)

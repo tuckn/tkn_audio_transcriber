@@ -449,23 +449,46 @@ tkn-audio-transcriber transcribe "C:\path\to\meeting.m4a" --profile cloud/azure-
 時刻は元のJSONLから付けるため、候補を確認する箇所を探せます。
 用語指定による改善は保証されないので、初回と再認識の結果は別フォルダに残してください。
 
-まず [tkn-genai-bridge](https://github.com/tuckn/tkn_genai_bridge) の接続設定を用意します。
-このCLIにはBridgeを依存パッケージとして同梱し、接続先・モデル・認証は
-`~/.tkn/genai_bridge/config.yaml` のプロファイルで管理します。
-このCLIの設定には次の項目を追加できます。省略時も同じ既定値です。
+生成AIの接続先は、このCLIの設定の `genai_profiles` に書きます。
+[tkn-genai-bridge](https://github.com/tuckn/tkn_genai_bridge) は、依存として固定したライブラリとしてだけ使います。
+Bridgeの設定ファイル（`~/.tkn/genai_bridge/config.yaml`）は読まないので、Bridgeを別に入れて設定する手順は要りません。
+CLIで動く生成AI（Codex・Claude Code・GitHub Copilot・Antigravity）は、それぞれのCLIのサインインをそのまま使います。
+次は組み込みの値です。書かなくても同じ値になります。
 
 ```yaml
+schema_version: "4.0.0"
+
+genai_profiles:
+  codex-default:
+    provider: codex
+    model: null  # null: 生成AIの既定のモデル
+  claude-default:
+    provider: claude-code
+    model: null
+  copilot-default:
+    provider: github-copilot
+    model: null
+  antigravity-default:
+    provider: antigravity
+    model: null
+
 generation:
   active_profile: codex
   profiles:
     codex:
-      bridge_profile: codex-default
+      genai_profile: codex-default
   max_candidates: 30
 ```
 
+- `genai_profiles` の各項目には、tkn-genai-bridge の `Profile` の設定（`provider`・`model`・`reasoning_effort`・`timeout_seconds`・`cli`・`ollama`・`azure` など）を書きます。生成するときに検証し、誤りは項目の場所とエラーの種類だけを示すerrorにします（値は表示しません）。数値でない `.nan` などの値は、設定を読むときにerrorにします。
+- 後の設定ファイルは、同じ名前の接続先に項目ごとに重ねます。たとえば、`codex-default` の `reasoning_effort` だけを変えられます。
+- `cli.executable` の相対パスは、それを書いた設定ファイルのフォルダを基準にします。`codex` のような名前だけなら、PATHから探します。基準がはっきりしない `D:codex.exe` のような書き方はerrorです。
+- `generation.profiles.<name>.genai_profile` には、`genai_profiles` の名前を書きます。`genai_profiles` にない名前はerrorになり、ほかの接続先に切り替えません。
+- `genai_profiles`・`genai_profile` を使う設定ファイルは、`schema_version` を `"4.0.0"` にしてください。以前の `bridge_profile` はerrorになります。
+
 `--generation-profile` はこのCLIの `generation.profiles` の名前です。
 音声認識に使う `--profile cloud/azure-ja` とは別の選択です。
-クラウド接続のBridgeプロファイルを選ぶと、文字起こし・参考テキストがその接続先に送信されます。
+`local_only: true` のOllamaの接続先のほかは、文字起こし・参考テキストが生成AIのサービスへ送信されます。
 
 次のPowerShell例では、初回の出力を `first`、確認用ファイルを `vocabulary`、
 修正後の用語による再認識結果を `second` に保存します。
@@ -640,7 +663,7 @@ tkn-audio-transcriber model download small --dry-run
 実際の Speech リソース名は、ユーザー設定または Git から除外した作業ディレクトリ設定に保存します。次は Azure 実行に必要な設定の抜粋です。既存の設定は残し、`endpoint` のプレースホルダーを自分の Speech リソースの URL に置き換えてください。
 
 ```yaml
-schema_version: "3.3.0"
+schema_version: "4.0.0"
 transcription:
   active:
     mode: cloud
@@ -802,7 +825,7 @@ Azure error時に`faster-whisper`へfallbackしません。
 次は、サウンドレコーダーの録音を保管してからAzureで文字起こしし、成功したら録音フォルダから消す例です。パスは自分の環境に置き換えてください。
 
 ```yaml
-schema_version: "3.3.0"
+schema_version: "4.0.0"
 
 sources:
   recordings:
@@ -849,14 +872,16 @@ unknown key、不正type、未対応`schema_version`はerrorです。
 `schema_version`は上位sourceから上書きする設定値ではなくsource metadataとして扱います。
 `config list`では選択profile、利用可能profile、各effective値のsource、各設定sourceのschema状態を確認できます。
 
-application-owned設定の独立したschema versionは`"3.3.0"`です。
+application-owned設定の独立したschema versionは`"4.0.0"`です。
 3要素のstringを必須とします。
-既存の`3.0.x`・`3.1.x`・`3.2.x`設定は編集不要で、構造を変えない新しいPatch（例: `"3.3.7"`）も受け付けます。`sources` を使う設定ファイルは`"3.2.0"`以上、`archive.name: created-time-original` を使う設定ファイルは`"3.3.0"`以上が必要です。
+`"4.0.0"` では、生成AIの接続先を `genai_profiles` に書くようにし、`generation.profiles.<name>.bridge_profile` を `genai_profile` に改名しました。
+`generation` を書けるschema 2以降のどの版でも、`bridge_profile` は改名の手順を示すerrorになります。
+`bridge_profile` を使っていない`3.0.x`～`3.3.x`設定は編集不要です。構造を変えない新しいPatch（例: `"4.0.7"`）も受け付けます。`sources` を使う設定ファイルは`"3.2.0"`以上、`archive.name: created-time-original` を使う設定ファイルは`"3.3.0"`以上、`genai_profiles`・`genai_profile` を使う設定ファイルは`"4.0.0"`以上が必要です。
 新しいMinor/Major、検証済み移行がない古いversion、不正形式、version欠落は、必要なactionを示すerrorになります。
 
 平坦な`1.0.x`、`1.1.x`、旧integer `schema_version: 1`、混在profile形式の`2.0.x`はin-memoryでlocal/cloud分離構造へ変換して読み取り、warningを表示します。
 読み取りだけではfileを書き換えません。
-schema 1・2に`config migrate`を実行すると、validation、backup、atomic replacementを経てschema `"3.3.0"`を永続化します。
+schema 1・2に`config migrate`を実行すると、validation、backup、atomic replacementを経てschema `"4.0.0"`を永続化します。移した設定ファイルには `genai_profiles` を書かず、`generation` は元の設定ファイルに書いた項目だけを書きます。ユーザー設定の接続先を上書きしないためです。schema 2の設定ファイルで `bridge_profile` を使っていたら、その設定ファイルのままキーを `genai_profile` に改名してから `config migrate` を実行します。schema 3の設定ファイルは書き換えず、`unchanged` を返します。
 
 ## 再実行と失敗時の動作
 

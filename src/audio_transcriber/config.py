@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import re
 import shutil
@@ -18,15 +19,18 @@ from .phrase_files import read_phrase_files, validate_phrase
 from .yaml_format import StringDateLoader, dump_yaml
 
 APPLICATION_ID = "audio_transcriber"
-SCHEMA_VERSION = "3.3.0"
-_SCHEMA_VERSION_PARTS = (3, 3, 0)
+SCHEMA_VERSION = "4.0.0"
+_SCHEMA_VERSION_PARTS = (4, 0, 0)
+# Schema 4 renamed generation.profiles.<name>.bridge_profile. Schema 3 files that do
+# not use that key mean the same in schema 4, so they are read without changes.
+_LAST_SCHEMA_3_MINOR = 3
 # `sources` was added in schema 3.2.0; an older declared version cannot use it.
 SOURCES_SCHEMA_VERSION = "3.2.0"
-SOURCES_MINIMUM_MINOR = 2
 # `archive.name: created-time-original` was added in schema 3.3.0.
 ARCHIVE_NAME_CREATED_TIME_ORIGINAL = "created-time-original"
 ARCHIVE_NAME_CREATED_TIME_ORIGINAL_SCHEMA_VERSION = "3.3.0"
-ARCHIVE_NAME_CREATED_TIME_ORIGINAL_MINIMUM_MINOR = 3
+# `genai_profiles` and `genai_profile` were added in schema 4.0.0.
+GENAI_PROFILES_SCHEMA_VERSION = "4.0.0"
 _SCHEMA_VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 CONFIG_EXAMPLE_RESOURCE = "resources/config.example.yaml"
 
@@ -139,6 +143,17 @@ PROFILE_DEFAULTS = {
     CLOUD_MODE: AZURE_PROFILE_DEFAULTS,
 }
 
+GENAI_PROFILES_KEY = "genai_profiles"
+DEFAULT_GENAI_PROFILE = "codex-default"
+# Generation connections, handed to tkn-genai-bridge as Profile objects. The CLI
+# providers reuse their own sign-in, so no Bridge configuration file is needed.
+BUILT_IN_GENAI_PROFILES: dict[str, dict[str, Any]] = {
+    "codex-default": {"provider": "codex", "model": None},
+    "claude-default": {"provider": "claude-code", "model": None},
+    "copilot-default": {"provider": "github-copilot", "model": None},
+    "antigravity-default": {"provider": "antigravity", "model": None},
+}
+
 BUILT_IN_CONFIG: dict[str, Any] = {
     "transcription": {
         "active": {"mode": LOCAL_MODE, "profile": "local-small"},
@@ -181,16 +196,17 @@ BUILT_IN_CONFIG: dict[str, Any] = {
         "heartbeat_seconds": 60,
         "keep_working_files": False,
     },
+    GENAI_PROFILES_KEY: deepcopy(BUILT_IN_GENAI_PROFILES),
     "generation": {
         "active_profile": "codex",
-        "profiles": {"codex": {"bridge_profile": "codex-default"}},
+        "profiles": {"codex": {"genai_profile": DEFAULT_GENAI_PROFILE}},
         "max_candidates": 30,
     },
 }
 
 TOP_LEVEL_KEYS = {"transcription", "folders", "processing", "generation"}
 SOURCES_KEY = "sources"
-V3_TOP_LEVEL_KEYS = {*TOP_LEVEL_KEYS, SOURCES_KEY}
+V3_TOP_LEVEL_KEYS = {*TOP_LEVEL_KEYS, SOURCES_KEY, GENAI_PROFILES_KEY}
 SOURCE_KEYS = {"input_dir", "include", "min_age_seconds", "profile", "output_dir", "archive"}
 SOURCE_ARCHIVE_KEYS = {"dir", "name", "delete_source"}
 SOURCE_ARCHIVE_NAMES = ("created-time", ARCHIVE_NAME_CREATED_TIME_ORIGINAL, "original")
@@ -377,6 +393,9 @@ class ResolvedConfig:
     phrase_file_sources: tuple[dict[str, Any], ...] = ()
     generation: dict[str, Any] = field(default_factory=dict)
     generation_sources: dict[str, str] = field(default_factory=dict)
+    # Merged connection settings; tkn-genai-bridge validates them when generation runs.
+    genai_profiles: dict[str, Any] = field(default_factory=dict)
+    genai_profile_sources: dict[str, str] = field(default_factory=dict)
     # Configured `sources` entries (input folders for `pull`), not value origins.
     input_sources: tuple[SourceConfig, ...] = ()
 
@@ -426,6 +445,8 @@ class ResolvedConfig:
             "phrase_files": list(self.phrase_file_sources),
             "generation": self.generation,
             "generation_sources": self.generation_sources,
+            "genai_profiles": self.genai_profiles,
+            "genai_profile_sources": self.genai_profile_sources,
             "sources": [source.to_dict() for source in self.input_sources],
         }
 
@@ -510,6 +531,18 @@ def _inspect_schema_version(value: dict[str, Any], path: Path) -> dict[str, Any]
                 "persistent_config_updated": False,
             },
         }
+    if major == 3:
+        if minor > _LAST_SCHEMA_3_MINOR:
+            raise ConfigError(
+                f"Unsupported legacy schema_version {raw_version!r} in {path}; "
+                "upgrade the application that created it or convert it manually"
+            )
+        # Read unchanged; the only key schema 4 renamed is rejected during validation.
+        return {
+            "schema_version": raw_version,
+            "effective_schema_version": SCHEMA_VERSION,
+            "migration": None,
+        }
     if major != current_major:
         direction = "newer" if major > current_major else "older"
         action = (
@@ -540,6 +573,11 @@ def _schema_major(raw_version: object) -> int:
         return 1
     assert isinstance(raw_version, str)
     return int(raw_version.split(".", maxsplit=1)[0])
+
+
+def _version_parts(raw_version: str) -> tuple[int, int, int]:
+    major, minor, patch = (int(part) for part in raw_version.split("."))
+    return major, minor, patch
 
 
 def _mapping(value: Any, label: str, path: Path) -> dict[str, Any]:
@@ -694,7 +732,7 @@ def _validate_v2_layer(value: dict[str, Any], path: Path) -> None:
                 path=path,
                 allowed_keys=V2_ALL_PROFILE_KEYS,
             )
-    _validate_shared_layer(value, path)
+    _validate_shared_layer(value, path, schema_major=2)
 
 
 def _validate_backend_layer(value: Any, *, mode: str, path: Path) -> None:
@@ -823,10 +861,88 @@ def _validate_v3_layer(value: dict[str, Any], path: Path) -> None:
         for mode in (LOCAL_MODE, CLOUD_MODE):
             if mode in transcription:
                 _validate_backend_layer(transcription[mode], mode=mode, path=path)
+    if GENAI_PROFILES_KEY in value:
+        _validate_genai_profiles(value[GENAI_PROFILES_KEY], path)
     _validate_shared_layer(value, path)
 
 
-def _validate_shared_layer(value: dict[str, Any], path: Path) -> None:
+def _require_plain_values(
+    value: Any, label: str, path: Path, parents: tuple[int, ...] = ()
+) -> None:
+    """Keep values `config list` can print: YAML scalars, lists, and string-keyed mappings."""
+    if isinstance(value, (dict, list)):
+        if id(value) in parents:
+            raise ConfigError(f"{label} must not contain itself through a YAML alias in {path}")
+        parents = (*parents, id(value))
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ConfigError(f"{label} keys must be strings in {path}")
+            _require_plain_values(key, f"{label} key", path)
+            _require_plain_values(item, f"{label}.{key}", path, parents)
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _require_plain_values(item, f"{label}[{index}]", path, parents)
+    elif isinstance(value, float):
+        if not math.isfinite(value):
+            raise ConfigError(f"{label} must be a finite number in {path}")
+    elif isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            # For example, a lone surrogate written as a "\ud83d" escape.
+            raise ConfigError(
+                f"{label} has text that cannot be written as UTF-8 in {path}"
+            ) from None
+    elif value is not None and not isinstance(value, (bool, int)):
+        raise ConfigError(f"{label} has an unsupported YAML type in {path}")
+
+
+def _validate_genai_profiles(value: Any, path: Path) -> None:
+    """Check the shape only; tkn-genai-bridge validates the fields when generation runs."""
+    profiles = _mapping(value, GENAI_PROFILES_KEY, path)
+    for raw_name, raw_profile in profiles.items():
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            raise ConfigError(f"{GENAI_PROFILES_KEY} names must be non-empty strings in {path}")
+        _require_plain_values(raw_name, f"{GENAI_PROFILES_KEY} name", path)
+        label = f"{GENAI_PROFILES_KEY}.{raw_name}"
+        profile = _mapping(raw_profile, label, path)
+        _require_plain_values(profile, label, path)
+        cli = profile.get("cli")
+        if cli is not None:
+            cli = _mapping(cli, f"{label}.cli", path)
+            executable = cli.get("executable")
+            if executable is not None:
+                _require_type(executable, str, f"{label}.cli.executable", path)
+                if Path(executable).drive and not Path(executable).is_absolute():
+                    # `D:codex.exe` depends on the current folder of drive D:.
+                    raise ConfigError(
+                        f"{label}.cli.executable must be an absolute path, a path relative "
+                        f"to this config file, or a command name on PATH in {path}"
+                    )
+
+
+def _renamed_bridge_profile_error(name: str, *, schema_major: int) -> ConfigError:
+    built_in = ", ".join(BUILT_IN_GENAI_PROFILES)
+    copy = (
+        f"copy the connection from the Bridge config into {GENAI_PROFILES_KEY}, unless it is "
+        "a built-in name whose settings you never changed there"
+    )
+    steps = (
+        # Schema 2 files keep their old transcription layout until `config migrate`.
+        "rename the key in this file, run `tkn-audio-transcriber config migrate` on it, and "
+        f"then {copy}"
+        if schema_major == 2
+        else f'{copy}, rename the key, and set schema_version: "{SCHEMA_VERSION}"'
+    )
+    return ConfigError(
+        f"generation.profiles.{name}.bridge_profile was renamed to genai_profile in schema "
+        f"{SCHEMA_VERSION}, and the shared tkn-genai-bridge config is no longer read. "
+        f"Connections built in: {built_in}. To update, {steps}"
+    )
+
+
+def _validate_shared_layer(value: dict[str, Any], path: Path, *, schema_major: int = 3) -> None:
     if "generation" in value:
         generation = _mapping(value["generation"], "generation", path)
         _reject_unknown(
@@ -846,11 +962,16 @@ def _validate_shared_layer(value: dict[str, Any], path: Path) -> None:
                 if not isinstance(name, str) or not name.strip():
                     raise ConfigError("Generation profile names must not be blank")
                 settings = _mapping(settings, f"generation.profiles.{name}", path)
-                _reject_unknown(settings, {"bridge_profile"}, "generation profile", path)
                 if "bridge_profile" in settings:
-                    bridge_profile = settings["bridge_profile"]
-                    if not isinstance(bridge_profile, str) or not bridge_profile.strip():
-                        raise ConfigError("bridge_profile must be a non-empty string")
+                    raise _renamed_bridge_profile_error(name, schema_major=schema_major)
+                _reject_unknown(settings, {"genai_profile"}, "generation profile", path)
+                if "genai_profile" in settings:
+                    genai_profile = settings["genai_profile"]
+                    if not isinstance(genai_profile, str) or not genai_profile.strip():
+                        raise ConfigError("genai_profile must be a non-empty string")
+                    _require_plain_values(
+                        genai_profile, f"generation.profiles.{name}.genai_profile", path
+                    )
     if "folders" in value:
         folders = _mapping(value["folders"], "folders", path)
         _reject_unknown(folders, FOLDER_KEYS, "folders", path)
@@ -998,13 +1119,16 @@ def _load_yaml(path: Path) -> tuple[dict[str, Any], dict[str, Any], int]:
         except ConfigError as exc:
             raise ConfigError(f"Invalid config file {path}: {exc}") from exc
     elif schema_major == 2:
+        # A schema 2 file may already use genai_profile: renaming bridge_profile there is
+        # the step before `config migrate`, which keeps the generation values as written.
         try:
             _validate_v2_layer(result, path)
         except ConfigError as exc:
             raise ConfigError(f"Invalid config file {path}: {exc}") from exc
     else:
         assert isinstance(raw_version, str)
-        if SOURCES_KEY in result and int(raw_version.split(".")[1]) < SOURCES_MINIMUM_MINOR:
+        declared = _version_parts(raw_version)
+        if SOURCES_KEY in result and declared < _version_parts(SOURCES_SCHEMA_VERSION):
             raise ConfigError(
                 f"Invalid config file {path}: sources requires schema_version "
                 f'"{SOURCES_SCHEMA_VERSION}" or later; update schema_version first'
@@ -1013,7 +1137,7 @@ def _load_yaml(path: Path) -> tuple[dict[str, Any], dict[str, Any], int]:
             _validate_v3_layer(result, path)
         except ConfigError as exc:
             raise ConfigError(f"Invalid config file {path}: {exc}") from exc
-        if int(raw_version.split(".")[1]) < ARCHIVE_NAME_CREATED_TIME_ORIGINAL_MINIMUM_MINOR:
+        if declared < _version_parts(ARCHIVE_NAME_CREATED_TIME_ORIGINAL_SCHEMA_VERSION):
             names = _sources_with_archive_name(
                 result.get(SOURCES_KEY), ARCHIVE_NAME_CREATED_TIME_ORIGINAL
             )
@@ -1024,7 +1148,50 @@ def _load_yaml(path: Path) -> tuple[dict[str, Any], dict[str, Any], int]:
                     f'"{ARCHIVE_NAME_CREATED_TIME_ORIGINAL_SCHEMA_VERSION}" or later; '
                     "update schema_version first"
                 )
+        if declared < _version_parts(GENAI_PROFILES_SCHEMA_VERSION):
+            new_key = (
+                GENAI_PROFILES_KEY
+                if GENAI_PROFILES_KEY in result
+                else _first_genai_profile_reference(result.get("generation"))
+            )
+            if new_key is not None:
+                raise ConfigError(
+                    f"Invalid config file {path}: {new_key} requires schema_version "
+                    f'"{GENAI_PROFILES_SCHEMA_VERSION}" or later; update schema_version first'
+                )
     return result, schema_report, schema_major
+
+
+def _first_genai_profile_reference(generation: object) -> str | None:
+    """Location of the first genai_profile key in an already validated generation layer."""
+    profiles = generation.get("profiles") if isinstance(generation, dict) else None
+    if isinstance(profiles, dict):
+        for name, settings in profiles.items():
+            if isinstance(settings, dict) and "genai_profile" in settings:
+                return f"generation.profiles.{name}.genai_profile"
+    return None
+
+
+def _resolve_genai_executables(layer: dict[str, Any], base: Path) -> None:
+    """Resolve executable paths from the file that set them; bare names still use PATH."""
+    profiles = layer.get(GENAI_PROFILES_KEY)
+    if not isinstance(profiles, dict):
+        return
+    for profile in profiles.values():
+        cli = profile.get("cli") if isinstance(profile, dict) else None
+        if not isinstance(cli, dict):
+            continue
+        executable = cli.get("executable")
+        if isinstance(executable, str) and (
+            "/" in executable or "\\" in executable or executable.startswith("~")
+        ):
+            try:
+                path = Path(executable).expanduser()
+            except RuntimeError:
+                # `~other-user` may not expand here. Leave it for the provider to report
+                # only if this connection is used, instead of failing every command.
+                continue
+            cli["executable"] = str(path if path.is_absolute() else (base / path).resolve())
 
 
 def _record_sources(
@@ -1058,6 +1225,9 @@ def _merge_config(
                 existing = {}
                 target[key] = existing
             _merge_config(existing, value, sources, label, key_path)
+            if not existing:
+                # An empty mapping is itself the effective value this layer set.
+                sources[key_path] = label
         else:
             target[key] = deepcopy(value)
             sources[key_path] = label
@@ -1218,6 +1388,15 @@ def _effective_profile(
     _merge_config(effective, profile, throwaway_sources, "profile")
     _validate_profile_values(effective, f"transcription.{mode}.profiles.{name}", path)
     return str(provider), effective
+
+
+def _has_leaf(value: dict[str, Any], keys: tuple[str, ...]) -> bool:
+    cursor: Any = value
+    for key in keys:
+        if not isinstance(cursor, dict) or key not in cursor:
+            return False
+        cursor = cursor[key]
+    return not isinstance(cursor, dict) or not cursor
 
 
 def _get_nested(value: dict[str, Any], keys: tuple[str, ...]) -> Any:
@@ -1518,6 +1697,7 @@ def resolve_config(
             _apply_v2_layer(config, layer, source_paths, source_label)
         else:
             _apply_sources_layer(media_sources, layer.pop(SOURCES_KEY, None), path, source_label)
+            _resolve_genai_executables(layer, path.parent)
             _merge_config(config, layer, source_paths, source_label)
         loaded_files.append(path)
 
@@ -1604,7 +1784,15 @@ def resolve_config(
         generation=deepcopy(config["generation"]),
         generation_sources={
             ".".join(key[1:]): source
-            for key, source in source_paths.items() if key[0] == "generation"
+            for key, source in source_paths.items()
+            if key[0] == "generation" and _has_leaf(config, key)
+        },
+        genai_profiles=deepcopy(config[GENAI_PROFILES_KEY]),
+        genai_profile_sources={
+            ".".join(key[1:]): source
+            for key, source in source_paths.items()
+            # A later `cli: null` removes inherited fields; drop their stale origins.
+            if key[0] == GENAI_PROFILES_KEY and _has_leaf(config, key)
         },
         input_sources=tuple(media_sources.values()),
     )
@@ -1703,6 +1891,13 @@ def migrate_config_file(path: Path, *, dry_run: bool = False) -> dict[str, Any]:
         _apply_legacy_layer(migrated, source, migrated_sources, source_label)
     else:
         _apply_v2_layer(migrated, source, migrated_sources, source_label)
+    # Schema 1 and 2 files never define AI connections. Writing the built-in ones, or
+    # generation values the file did not set, would override a user config it is layered on.
+    migrated.pop(GENAI_PROFILES_KEY)
+    if "generation" in source:
+        migrated["generation"] = deepcopy(source["generation"])
+    else:
+        migrated.pop("generation")
     migrated_text = _config_text(migrated)
 
     try:

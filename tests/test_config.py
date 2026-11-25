@@ -136,7 +136,9 @@ def test_custom_profile_inherits_provider_defaults(tmp_path: Path) -> None:
         ('schema_version: "2.0.0-rc1"\n', "expected a quoted MAJOR.MINOR.PATCH"),
         ('schema_version: "0.9.0"\n', "Unsupported older schema_version"),
         ('schema_version: "2.1.0"\n', "Unsupported legacy schema_version"),
-        ('schema_version: "4.0.0"\n', "Unsupported newer schema_version"),
+        ('schema_version: "3.4.0"\n', "Unsupported legacy schema_version"),
+        ('schema_version: "4.1.0"\n', "Unsupported newer schema_version"),
+        ('schema_version: "5.0.0"\n', "Unsupported newer schema_version"),
         ('schema_version: "3.0.0"\nunknown_key: value\n', "Unknown config key"),
         (
             'schema_version: "3.0.0"\n'
@@ -342,8 +344,16 @@ def test_packaged_example_has_hierarchical_complete_schema(tmp_path: Path) -> No
     assert text.splitlines()[0] == f'schema_version: "{SCHEMA_VERSION}"'
     assert loaded["schema_version"] == SCHEMA_VERSION
     assert set(loaded) == {
-        "schema_version", "sources", "transcription", "folders", "processing", "generation"
+        "schema_version", "sources", "transcription", "folders", "processing",
+        "genai_profiles", "generation",
     }
+    assert loaded["genai_profiles"] == {
+        "codex-default": {"provider": "codex", "model": None},
+        "claude-default": {"provider": "claude-code", "model": None},
+        "copilot-default": {"provider": "github-copilot", "model": None},
+        "antigravity-default": {"provider": "antigravity", "model": None},
+    }
+    assert loaded["generation"]["profiles"] == {"codex": {"genai_profile": "codex-default"}}
     assert loaded["sources"] == {}
     assert loaded["transcription"]["active"] == {
         "mode": "local",
@@ -596,8 +606,10 @@ def test_created_time_original_archive_name_requires_schema_3_3(tmp_path: Path) 
     ):
         resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=old)
 
-    new = _write(tmp_path / "new.yaml", f'schema_version: "3.3.0"\n{body}')
-    resolved = resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=new)
-    archive = resolved.input_sources[0].archive
-    assert archive is not None
-    assert archive.name == "created-time-original"
+    # Compare whole versions: schema 4.0.0 has a lower minor number than 3.3.0.
+    for version in ("3.3.0", "4.0.0"):
+        new = _write(tmp_path / f"new-{version}.yaml", f'schema_version: "{version}"\n{body}')
+        resolved = resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=new)
+        archive = resolved.input_sources[0].archive
+        assert archive is not None
+        assert archive.name == "created-time-original"
