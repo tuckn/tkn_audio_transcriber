@@ -308,13 +308,11 @@ def test_generation_profiles_limits_and_empty_result(
         'schema_version: "4.0.0"\n'
         "genai_profiles:\n"
         "  local-text:\n    provider: ollama\n    model: gemma4:latest\n    local_only: true\n"
-        "generation:\n  active_profile: local\n"
-        "  profiles:\n    local:\n      genai_profile: local-text\n"
-        "  max_candidates: 12\n",
+        "generation:\n  genai_profile: local-text\n  max_candidates: 12\n",
         encoding="utf-8",
     )
     config = resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=path)
-    assert "profiles.local.genai_profile" in config.generation_sources
+    assert config.generation_sources["genai_profile"].endswith(str(path))
     assert config.genai_profile_sources["local-text.provider"].endswith(str(path))
     bridge["data"] = {"candidates": []}
     result = suggest_phrases(transcript, output_dir=tmp_path / "review", config=config)
@@ -327,9 +325,9 @@ def test_generation_profiles_limits_and_empty_result(
     assert manifest["schema_version"] == "2.0.0"
     assert manifest["genai_profile"] == "local-text" and "bridge_profile" not in manifest
     assert read_phrase_files([], [tmp_path / "review/phrases.txt"])[0] == []
-    with pytest.raises(ConfigError, match="Unknown"):
+    with pytest.raises(ConfigError, match="not defined in genai_profiles"):
         suggest_phrases(
-            transcript, output_dir=tmp_path / "other", config=config, generation_profile="missing"
+            transcript, output_dir=tmp_path / "other", config=config, genai_profile="missing"
         )
 
 
@@ -378,26 +376,22 @@ def test_undefined_or_invalid_genai_profile_fails_before_generation(
         # Full-width digits pass the date pattern, and the date parser quotes the value.
         "  priced:\n    provider: codex\n    pricing:\n      m:\n        currency: JPY\n"
         "        pricing_date: '２０２６-０１-０１'\n"
-        "        input_per_million: 1\n        output_per_million: 1\n"
-        "generation:\n  profiles:\n"
-        "    missing:\n      genai_profile: codex-high\n"
-        "    broken:\n      genai_profile: broken\n"
-        "    priced:\n      genai_profile: priced\n",
+        "        input_per_million: 1\n        output_per_million: 1\n",
         encoding="utf-8",
     )
     config = resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=path)
     with pytest.raises(ConfigError, match="not defined in genai_profiles"):
         suggest_phrases(
-            transcript, output_dir=tmp_path / "a", config=config, generation_profile="missing"
+            transcript, output_dir=tmp_path / "a", config=config, genai_profile="codex-high"
         )
     with pytest.raises(ConfigError, match=r"genai_profiles\.broken: timeout_seconds \(") as caught:
         suggest_phrases(
-            transcript, output_dir=tmp_path / "b", config=config, generation_profile="broken"
+            transcript, output_dir=tmp_path / "b", config=config, genai_profile="broken"
         )
     assert "private-value" not in str(caught.value)
     with pytest.raises(ConfigError, match=r"pricing\.m\.pricing_date \(") as caught:
         suggest_phrases(
-            transcript, output_dir=tmp_path / "c", config=config, generation_profile="priced"
+            transcript, output_dir=tmp_path / "c", config=config, genai_profile="priced"
         )
     assert "２０２６" not in str(caught.value)
     assert bridge["calls"] == []
@@ -411,8 +405,7 @@ def test_config_migrate_does_not_write_ai_connections_over_user_config(tmp_path:
     user.write_text(
         'schema_version: "4.0.0"\n'
         "genai_profiles:\n  codex-default:\n    provider: claude-code\n"
-        "generation:\n  active_profile: local\n"
-        "  profiles:\n    local:\n      genai_profile: codex-default\n",
+        "generation:\n  genai_profile: claude-default\n",
         encoding="utf-8",
     )
     project = tmp_path / "project.yaml"
@@ -423,7 +416,7 @@ def test_config_migrate_does_not_write_ai_connections_over_user_config(tmp_path:
     config = resolve_config(cwd=tmp_path, home=home, explicit_config=project)
     assert config.values["language"] == "en"
     assert config.genai_profiles["codex-default"]["provider"] == "claude-code"
-    assert config.generation["active_profile"] == "local"
+    assert config.generation["genai_profile"] == "claude-default"
 
 
 def test_config_migrate_keeps_only_generation_values_the_file_set(tmp_path: Path) -> None:
@@ -433,7 +426,7 @@ def test_config_migrate_keeps_only_generation_values_the_file_set(tmp_path: Path
     user.write_text(
         'schema_version: "4.0.0"\n'
         "genai_profiles:\n  private:\n    provider: ollama\n    model: m\n    local_only: true\n"
-        "generation:\n  profiles:\n    codex:\n      genai_profile: private\n",
+        "generation:\n  genai_profile: private\n",
         encoding="utf-8",
     )
     project = tmp_path / "project.yaml"
@@ -445,24 +438,25 @@ def test_config_migrate_keeps_only_generation_values_the_file_set(tmp_path: Path
     }
     after = resolve_config(cwd=tmp_path, home=home, explicit_config=project)
     assert after.generation == before.generation
-    assert after.generation["profiles"]["codex"]["genai_profile"] == "private"
+    assert after.generation["genai_profile"] == "private"
 
 
-def test_schema_2_bridge_profile_guides_through_config_migrate(tmp_path: Path) -> None:
+def test_schema_2_generation_profiles_guide_through_config_migrate(tmp_path: Path) -> None:
     path = tmp_path / "config.yaml"
-    legacy = (
-        'schema_version: "2.0.0"\n'
-        "transcription:\n  active_profile: local-small\n"
-        "generation:\n  profiles:\n    codex:\n      bridge_profile: codex-default\n"
+    transcription = 'schema_version: "2.0.0"\ntranscription:\n  active_profile: local-small\n'
+    path.write_text(
+        transcription + "generation:\n  active_profile: codex\n"
+        "  profiles:\n    codex:\n      bridge_profile: codex-default\n",
+        encoding="utf-8",
     )
-    path.write_text(legacy, encoding="utf-8")
-    with pytest.raises(ConfigError, match="config migrate"):
+    with pytest.raises(ConfigError, match="config migrate") as caught:
         resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=path)
-    path.write_text(legacy.replace("bridge_profile", "genai_profile"), encoding="utf-8")
+    assert "shared tkn-genai-bridge config" in str(caught.value)
+    path.write_text(transcription + "generation:\n  genai_profile: codex-default\n")
     assert migrate_config_file(path)["status"] == "migrated"
     migrated = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert migrated["schema_version"] == "4.0.0"
-    assert migrated["generation"] == {"profiles": {"codex": {"genai_profile": "codex-default"}}}
+    assert migrated["generation"] == {"genai_profile": "codex-default"}
     assert migrated["transcription"]["active"] == {"mode": "local", "profile": "local-small"}
 
 
@@ -491,7 +485,7 @@ def test_genai_profiles_reject_values_config_list_cannot_print(
     "body",
     [
         'genai_profiles:\n  "\\ud83d":\n    provider: codex\n',
-        'generation:\n  profiles:\n    codex:\n      genai_profile: "\\ud83d"\n',
+        'generation:\n  genai_profile: "\\ud83d"\n',
     ],
 )
 def test_genai_names_and_references_must_be_utf8(tmp_path: Path, body: str) -> None:
@@ -563,41 +557,49 @@ def test_removed_genai_fields_drop_their_sources(tmp_path: Path) -> None:
     assert config.genai_profiles["codex-default"]["cli"] == {}
     assert config.genai_profile_sources["codex-default.cli"].endswith(str(explicit))
     # An empty mapping that a later file fills is no longer an effective value.
-    user.write_text(
-        'schema_version: "4.0.0"\ngeneration:\n  profiles:\n    custom: {}\n', encoding="utf-8"
-    )
+    user.write_text(explicit.read_text(encoding="utf-8"), encoding="utf-8")
     explicit.write_text(
-        'schema_version: "4.0.0"\n'
-        "generation:\n  profiles:\n    custom:\n      genai_profile: codex-default\n",
+        'schema_version: "4.0.0"\ngenai_profiles:\n  codex-default:\n'
+        "    cli:\n      executable: codex\n",
         encoding="utf-8",
     )
     config = resolve_config(cwd=tmp_path, home=home, explicit_config=explicit)
-    assert "profiles.custom" not in config.generation_sources
-    assert config.generation_sources["profiles.custom.genai_profile"].endswith(str(explicit))
+    assert "codex-default.cli" not in config.genai_profile_sources
+    assert config.genai_profile_sources["codex-default.cli.executable"].endswith(str(explicit))
 
 
-@pytest.mark.parametrize("version", ["3.3.0", "4.0.0"])
-def test_bridge_profile_is_rejected_with_rename_guidance(tmp_path: Path, version: str) -> None:
+@pytest.mark.parametrize(
+    ("version", "generation", "bridge"),
+    [
+        ("3.3.0", "  profiles:\n    codex:\n      bridge_profile: codex-default\n", True),
+        ("4.0.0", "  profiles:\n    codex:\n      bridge_profile: codex-default\n", True),
+        ("4.0.0", "  active_profile: codex\n", False),
+        ("4.0.0", "  profiles:\n    codex:\n      genai_profile: codex-default\n", False),
+    ],
+)
+def test_generation_profiles_are_rejected_with_guidance(
+    tmp_path: Path, version: str, generation: str, bridge: bool
+) -> None:
     path = tmp_path / "config.yaml"
     path.write_text(
-        f'schema_version: "{version}"\n'
-        "generation:\n  profiles:\n    codex:\n      bridge_profile: codex-default\n",
-        encoding="utf-8",
+        f'schema_version: "{version}"\ngeneration:\n{generation}', encoding="utf-8"
     )
     with pytest.raises(ConfigError) as caught:
         resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=path)
     message = str(caught.value)
-    assert "generation.profiles.codex.bridge_profile was renamed to genai_profile" in message
-    assert "genai_profiles" in message and 'schema_version: "4.0.0"' in message
+    assert "generation.active_profile and generation.profiles were removed" in message
+    assert "generation.genai_profile" in message and 'schema_version: "4.0.0"' in message
+    assert ("shared tkn-genai-bridge config" in message) is bridge
 
 
 @pytest.mark.parametrize(
     ("body", "key"),
     [
         ("genai_profiles:\n  custom:\n    provider: codex\n", "genai_profiles"),
+        ("generation:\n  genai_profile: codex-default\n", "generation.genai_profile"),
         (
-            "generation:\n  profiles:\n    codex:\n      genai_profile: codex-default\n",
-            "generation.profiles.codex.genai_profile",
+            "sources:\n  s:\n    input_dir: a\n    output_dir: b\n    correction: {}\n",
+            "sources.s.correction",
         ),
     ],
 )
@@ -617,7 +619,7 @@ def test_schema_3_without_bridge_profile_is_read_unchanged(tmp_path: Path) -> No
     assert not config.has_in_memory_migrations
     assert config.config_sources[-1]["effective_schema_version"] == "4.0.0"
     assert config.generation["max_candidates"] == 7
-    assert config.generation["profiles"] == {"codex": {"genai_profile": "codex-default"}}
+    assert config.generation["genai_profile"] == "codex-default"
 
 
 def test_bridge_failure_hides_private_response(
@@ -654,8 +656,8 @@ def test_cli_suggest_json_and_dry_run(
                 str(transcript),
                 "--output-dir",
                 str(tmp_path / "review"),
-                "--generation-profile",
-                "codex",
+                "--genai-profile",
+                "codex-default",
                 "--dry-run",
                 "--json",
             ]

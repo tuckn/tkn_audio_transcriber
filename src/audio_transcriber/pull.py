@@ -318,6 +318,8 @@ def _process_file(
             else "never"
         )
         item["plan"] = dry_run_plan(config)
+        if source.correction is not None:
+            item["correction"] = {"status": "planned"}
         return
 
     if archive_path is not None and not reused:
@@ -336,6 +338,32 @@ def _process_file(
         item["source_deleted"] = True
         logger.info("Removed the archived source from the input folder: %s", path)
     item["status"] = "transcribed"
+    if source.correction is not None:
+        item["correction"] = _correct(result, source, config, logger)
+
+
+def _correct(
+    result: TranscriptionResult, source: SourceConfig, config: ResolvedConfig,
+    logger: logging.Logger,
+) -> dict[str, Any]:
+    """Correct a saved transcript; a failure keeps the transcript and is reported."""
+    from .corrections import correct_transcript
+
+    assert source.correction is not None
+    try:
+        corrected = correct_transcript(
+            result.outputs.jsonl, config=config,
+            context_files=source.correction.context_files, if_needed=True, logger=logger,
+        )
+    except Exception as exc:
+        # The transcript and archive are complete; `correct` can be run on it later.
+        logger.error("Could not correct %s: %s: %s", result.outputs.jsonl, type(exc).__name__, exc)
+        return {"status": "failed", "error": {"type": type(exc).__name__, "message": str(exc)}}
+    return {
+        key: corrected[key]
+        for key in ("status", "run_id", "change_count", "rejected_count", "reason")
+        if key in corrected
+    } | {"corrections": corrected["outputs"]["corrections"]}
 
 
 def run_pull(
@@ -349,9 +377,13 @@ def run_pull(
     pipeline_factory: PipelineFactory = _default_pipeline,
     clock: Callable[[], float] = time.time,
 ) -> dict[str, Any]:
-    # Check every profile and upload approval before any file is copied or sent.
+    # Check every profile, upload approval, and AI connection before any file is copied or sent.
     for source in sources:
         config = resolve(source.profile, None)
+        if source.correction is not None:
+            from .corrections import preflight_correction
+
+            preflight_correction(config, context_files=source.correction.context_files)
         if (
             isinstance(config.transcription, AzureSpeechTranscriptionConfig)
             and not dry_run
@@ -405,9 +437,12 @@ def run_pull(
         status: sum(1 for item in items if item["status"] == status)
         for status in ("planned", "transcribed", "skipped", "failed")
     }
+    correction_failures = sum(
+        1 for item in items if item.get("correction", {}).get("status") == "failed"
+    )
     if dry_run:
         status = "planned"
-    elif not counts["failed"]:
+    elif not counts["failed"] and not correction_failures:
         status = "completed"
     else:
         status = "partial" if counts["transcribed"] else "failed"
@@ -423,4 +458,5 @@ def run_pull(
         "transcribed_count": counts["transcribed"],
         "skipped_count": counts["skipped"],
         "failures_count": counts["failed"],
+        "correction_failures_count": correction_failures,
     }

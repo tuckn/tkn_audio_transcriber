@@ -17,6 +17,9 @@ sources: {}
 #                          # original: Recording.flac
 #      delete_source: false  # true: remove the input file after a verified copy
 #                            # and a successful transcription.
+#    correction:  # Optional. Correct each new transcript with generation.genai_profile.
+#      context_files: [./vocabulary/recordings.txt]  # UTF-8 background text, such as
+#                                                    # a glossary. Relative to this file.
 
 folders:
   # Root for source-name/hash folders containing audio.flac and transcripts.
@@ -97,8 +100,8 @@ transcription:
           timeout_seconds: 600
           max_retries: 3
 
-# Generative AI connections for suggest-phrases, passed to tkn-genai-bridge as
-# its Profile settings. The shared tkn-genai-bridge config is not read. Layers
+# Generative AI connections for correct and suggest-phrases, passed to
+# tkn-genai-bridge as its Profile settings. The shared tkn-genai-bridge config is not read. Layers
 # merge by name and field. CLI providers reuse their own sign-in; a relative
 # cli.executable is relative to this config file.
 genai_profiles:
@@ -121,8 +124,5 @@ genai_profiles:
 #    timeout_seconds: 1800
 
 generation:
-  active_profile: codex
-  profiles:
-    codex:
-      genai_profile: codex-default  # A name in genai_profiles.
-  max_candidates: 30
+  genai_profile: codex-default  # A name in genai_profiles; --genai-profile overrides it.
+  max_candidates: 30  # suggest-phrases only.

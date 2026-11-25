@@ -198,8 +198,7 @@ BUILT_IN_CONFIG: dict[str, Any] = {
     },
     GENAI_PROFILES_KEY: deepcopy(BUILT_IN_GENAI_PROFILES),
     "generation": {
-        "active_profile": "codex",
-        "profiles": {"codex": {"genai_profile": DEFAULT_GENAI_PROFILE}},
+        "genai_profile": DEFAULT_GENAI_PROFILE,
         "max_candidates": 30,
     },
 }
@@ -207,8 +206,11 @@ BUILT_IN_CONFIG: dict[str, Any] = {
 TOP_LEVEL_KEYS = {"transcription", "folders", "processing", "generation"}
 SOURCES_KEY = "sources"
 V3_TOP_LEVEL_KEYS = {*TOP_LEVEL_KEYS, SOURCES_KEY, GENAI_PROFILES_KEY}
-SOURCE_KEYS = {"input_dir", "include", "min_age_seconds", "profile", "output_dir", "archive"}
+SOURCE_KEYS = {
+    "input_dir", "include", "min_age_seconds", "profile", "output_dir", "archive", "correction",
+}
 SOURCE_ARCHIVE_KEYS = {"dir", "name", "delete_source"}
+SOURCE_CORRECTION_KEYS = {"context_files"}
 SOURCE_ARCHIVE_NAMES = ("created-time", ARCHIVE_NAME_CREATED_TIME_ORIGINAL, "original")
 DEFAULT_SOURCE_INCLUDE = (
     "*.flac", "*.m4a", "*.mp3", "*.wav", "*.wma", "*.aac", "*.ogg", "*.opus",
@@ -347,6 +349,14 @@ class SourceArchiveConfig:
 
 
 @dataclass(frozen=True)
+class SourceCorrectionConfig:
+    """Correct each new transcript with generative AI after `pull` transcribes it."""
+
+    # Absolute paths of UTF-8 background text, such as a glossary of the speaker's terms.
+    context_files: tuple[Path, ...] = ()
+
+
+@dataclass(frozen=True)
 class SourceConfig:
     """A folder whose new media files `pull` archives and transcribes."""
 
@@ -359,6 +369,7 @@ class SourceConfig:
     output_dir: str
     archive: SourceArchiveConfig | None
     defined_in: str
+    correction: SourceCorrectionConfig | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -372,6 +383,9 @@ class SourceConfig:
                 "dir": self.archive.directory,
                 "name": self.archive.name,
                 "delete_source": self.archive.delete_source,
+            },
+            "correction": None if self.correction is None else {
+                "context_files": [str(path) for path in self.correction.context_files],
             },
             "defined_in": self.defined_in,
         }
@@ -823,6 +837,17 @@ def _validate_sources(value: Any, path: Path) -> None:
                 _require_type(
                     archive["delete_source"], bool, f"{label}.archive.delete_source", path
                 )
+        if "correction" in source and source["correction"] is not None:
+            # `correction: {}` turns correction on without background text.
+            correction = _mapping(source["correction"], f"{label}.correction", path)
+            _reject_unknown(correction, SOURCE_CORRECTION_KEYS, f"{label}.correction", path)
+            files = correction.get("context_files", [])
+            if not isinstance(files, list) or any(
+                not isinstance(item, str) or not item.strip() or "\x00" in item for item in files
+            ):
+                raise ConfigError(
+                    f"{label}.correction.context_files must be a list of non-empty paths in {path}"
+                )
 
 
 def _sources_with_archive_name(sources: object, archive_name: str) -> list[str]:
@@ -922,56 +947,51 @@ def _validate_genai_profiles(value: Any, path: Path) -> None:
                     )
 
 
-def _renamed_bridge_profile_error(name: str, *, schema_major: int) -> ConfigError:
+def _removed_generation_profiles_error(generation: dict[str, Any], *, schema_major: int) -> str:
+    """Guidance for `generation.active_profile` and `generation.profiles`, removed in 4.0.0."""
     built_in = ", ".join(BUILT_IN_GENAI_PROFILES)
-    copy = (
-        f"copy the connection from the Bridge config into {GENAI_PROFILES_KEY}, unless it is "
-        "a built-in name whose settings you never changed there"
+    profiles = generation.get("profiles")
+    uses_bridge = isinstance(profiles, dict) and any(
+        isinstance(settings, dict) and "bridge_profile" in settings
+        for settings in profiles.values()
     )
-    steps = (
+    bridge = (
+        " The shared tkn-genai-bridge config (bridge_profile) is no longer read: copy the "
+        f"connection from it into {GENAI_PROFILES_KEY}, unless it is a built-in name whose "
+        "settings you never changed there."
+        if uses_bridge
+        else ""
+    )
+    finish = (
         # Schema 2 files keep their old transcription layout until `config migrate`.
-        "rename the key in this file, run `tkn-audio-transcriber config migrate` on it, and "
-        f"then {copy}"
+        "in this file, then run `tkn-audio-transcriber config migrate` on it"
         if schema_major == 2
-        else f'{copy}, rename the key, and set schema_version: "{SCHEMA_VERSION}"'
+        else f'and set schema_version: "{SCHEMA_VERSION}"'
     )
-    return ConfigError(
-        f"generation.profiles.{name}.bridge_profile was renamed to genai_profile in schema "
-        f"{SCHEMA_VERSION}, and the shared tkn-genai-bridge config is no longer read. "
-        f"Connections built in: {built_in}. To update, {steps}"
+    return (
+        f"generation.active_profile and generation.profiles were removed in schema "
+        f"{SCHEMA_VERSION}. Name the connection directly with generation.genai_profile "
+        f"(a name in {GENAI_PROFILES_KEY}; built in: {built_in}) {finish}.{bridge}"
     )
 
 
 def _validate_shared_layer(value: dict[str, Any], path: Path, *, schema_major: int = 3) -> None:
     if "generation" in value:
         generation = _mapping(value["generation"], "generation", path)
-        _reject_unknown(
-            generation, {"active_profile", "profiles", "max_candidates"}, "generation", path
-        )
-        if "active_profile" in generation:
-            _require_type(generation["active_profile"], str, "generation.active_profile", path)
-            if not generation["active_profile"].strip():
-                raise ConfigError("generation.active_profile must not be blank")
+        if "active_profile" in generation or "profiles" in generation:
+            raise ConfigError(
+                _removed_generation_profiles_error(generation, schema_major=schema_major)
+            )
+        _reject_unknown(generation, {"genai_profile", "max_candidates"}, "generation", path)
+        if "genai_profile" in generation:
+            genai_profile = generation["genai_profile"]
+            if not isinstance(genai_profile, str) or not genai_profile.strip():
+                raise ConfigError("generation.genai_profile must be a non-empty string")
+            _require_plain_values(genai_profile, "generation.genai_profile", path)
         if "max_candidates" in generation:
             _positive_integer(generation["max_candidates"], "generation.max_candidates", path)
             if generation["max_candidates"] > 500:
                 raise ConfigError("generation.max_candidates must be at most 500")
-        if "profiles" in generation:
-            profiles = _mapping(generation["profiles"], "generation.profiles", path)
-            for name, settings in profiles.items():
-                if not isinstance(name, str) or not name.strip():
-                    raise ConfigError("Generation profile names must not be blank")
-                settings = _mapping(settings, f"generation.profiles.{name}", path)
-                if "bridge_profile" in settings:
-                    raise _renamed_bridge_profile_error(name, schema_major=schema_major)
-                _reject_unknown(settings, {"genai_profile"}, "generation profile", path)
-                if "genai_profile" in settings:
-                    genai_profile = settings["genai_profile"]
-                    if not isinstance(genai_profile, str) or not genai_profile.strip():
-                        raise ConfigError("genai_profile must be a non-empty string")
-                    _require_plain_values(
-                        genai_profile, f"generation.profiles.{name}.genai_profile", path
-                    )
     if "folders" in value:
         folders = _mapping(value["folders"], "folders", path)
         _reject_unknown(folders, FOLDER_KEYS, "folders", path)
@@ -1119,8 +1139,8 @@ def _load_yaml(path: Path) -> tuple[dict[str, Any], dict[str, Any], int]:
         except ConfigError as exc:
             raise ConfigError(f"Invalid config file {path}: {exc}") from exc
     elif schema_major == 2:
-        # A schema 2 file may already use genai_profile: renaming bridge_profile there is
-        # the step before `config migrate`, which keeps the generation values as written.
+        # A schema 2 file may already use generation.genai_profile: setting it there is the
+        # step before `config migrate`, which keeps the generation values as written.
         try:
             _validate_v2_layer(result, path)
         except ConfigError as exc:
@@ -1149,11 +1169,7 @@ def _load_yaml(path: Path) -> tuple[dict[str, Any], dict[str, Any], int]:
                     "update schema_version first"
                 )
         if declared < _version_parts(GENAI_PROFILES_SCHEMA_VERSION):
-            new_key = (
-                GENAI_PROFILES_KEY
-                if GENAI_PROFILES_KEY in result
-                else _first_genai_profile_reference(result.get("generation"))
-            )
+            new_key = _first_schema_4_key(result)
             if new_key is not None:
                 raise ConfigError(
                     f"Invalid config file {path}: {new_key} requires schema_version "
@@ -1162,13 +1178,18 @@ def _load_yaml(path: Path) -> tuple[dict[str, Any], dict[str, Any], int]:
     return result, schema_report, schema_major
 
 
-def _first_genai_profile_reference(generation: object) -> str | None:
-    """Location of the first genai_profile key in an already validated generation layer."""
-    profiles = generation.get("profiles") if isinstance(generation, dict) else None
-    if isinstance(profiles, dict):
-        for name, settings in profiles.items():
-            if isinstance(settings, dict) and "genai_profile" in settings:
-                return f"generation.profiles.{name}.genai_profile"
+def _first_schema_4_key(layer: dict[str, Any]) -> str | None:
+    """Location of the first key added in schema 4.0.0, in an already validated layer."""
+    if GENAI_PROFILES_KEY in layer:
+        return GENAI_PROFILES_KEY
+    generation = layer.get("generation")
+    if isinstance(generation, dict) and "genai_profile" in generation:
+        return "generation.genai_profile"
+    sources = layer.get(SOURCES_KEY)
+    if isinstance(sources, dict):
+        for name, source in sources.items():
+            if isinstance(source, dict) and "correction" in source:
+                return f"{SOURCES_KEY}.{name}.correction"
     return None
 
 
@@ -1553,6 +1574,15 @@ def _build_source(name: str, entry: dict[str, Any], base: Path, label: str) -> S
             delete_source=bool(archive_entry.get("delete_source", False)),
         )
     profile = entry.get("profile")
+    correction_entry = entry.get("correction")
+    correction = None
+    if correction_entry is not None:
+        correction = SourceCorrectionConfig(
+            context_files=tuple(
+                Path(_absolute_template(str(item), base))
+                for item in correction_entry.get("context_files", [])
+            )
+        )
     return SourceConfig(
         name=name,
         input_dir=Path(_absolute_template(str(entry["input_dir"]), base)),
@@ -1562,6 +1592,7 @@ def _build_source(name: str, entry: dict[str, Any], base: Path, label: str) -> S
         output_dir=_absolute_template(str(entry["output_dir"]), base),
         archive=archive,
         defined_in=label,
+        correction=correction,
     )
 
 

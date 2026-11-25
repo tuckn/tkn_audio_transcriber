@@ -353,7 +353,7 @@ def test_packaged_example_has_hierarchical_complete_schema(tmp_path: Path) -> No
         "copilot-default": {"provider": "github-copilot", "model": None},
         "antigravity-default": {"provider": "antigravity", "model": None},
     }
-    assert loaded["generation"]["profiles"] == {"codex": {"genai_profile": "codex-default"}}
+    assert loaded["generation"] == {"genai_profile": "codex-default", "max_candidates": 30}
     assert loaded["sources"] == {}
     assert loaded["transcription"]["active"] == {
         "mode": "local",

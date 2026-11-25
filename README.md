@@ -151,6 +151,7 @@ tkn-audio-transcriber status
 | モデルを事前取得する | [`model download`](#model-download) | ローカル認識モデルをダウンロードする |
 | 文字起こしを作る | [`transcribe`](#transcribe) | 全編 FLAC と文字起こし一式を作る |
 | 録音フォルダを処理する | [`pull`](#pull) | 設定した入力フォルダの新しいファイルを保管し、文字起こしする |
+| 文字起こしを直す | [`correct`](#correct)、`transcribe --correct` | 生成AIで固有名詞・用語・表記の誤りを単語単位で直す。JSONLは元のまま残し、`--revert` で戻せる |
 | 文字起こしと用語候補を一括作成する | [`transcribe --suggest-phrases`](#transcribe---suggest-phrases) | 初回の文字起こしと用語候補ファイルの生成を一括実行する |
 | 用語候補を作る | [`suggest-phrases`](#suggest-phrases) | 保存済みの文字起こしから用語候補ファイルを生成する |
 | 状況・成果物を調べる | [`status`](#status)、[`validate`](#validate) | 保存済みジョブの状態や出力ハッシュを確認する |
@@ -193,8 +194,9 @@ transcripts/
 | `transcript_*.md` | 時刻付き本文を読む主成果物。Frontmatter に入力名、プロファイル、モデル、言語、ツールのバージョンなどを記録 |
 | `transcript_*.txt` | 時刻を除いた本文だけのテキスト。生成AIのプロンプトなどへそのまま貼る用。認識した区間ごとに1行。話者分離で話者が返された場合は `Speaker 1: ` のように行頭へ付ける |
 | `transcript_*.srt` | 再生ソフトや動画編集ソフトで使う字幕。Azure で話者情報が返された場合はラベルを含む |
-| `transcript_*.jsonl` | 1 行 1 JSON オブジェクトの区間データ。後続の処理に使う |
+| `transcript_*.jsonl` | 1 行 1 JSON オブジェクトの区間データ。後続の処理に使う。[`correct`](#correct) で直しても、音声認識の元の文のまま残る |
 | `transcript_*.manifest.json` | 入力ハッシュ、設定、実行情報、出力ハッシュを記録する検証用ファイル。`validate` の入力に使う |
+| `transcript_*.corrections.json` | [`correct`](#correct) で直したときだけできる変換ログ。実行ごとの接続先・モデル・参考テキスト・置換・退けた置換を記録する |
 
 最終成果物の既定の保存先は実行時の作業ディレクトリです。`--output-dir` または `folders.output` で変更できます。設定内の相対パスも作業ディレクトリを基準に解決します。旧版の平坦な出力は自動移動・削除しません。更新後の実行では新構成の成果物を別途作成します。設定schemaは変わらず、既存の `folders.output` を保存先ルートとして使えます。
 
@@ -378,7 +380,7 @@ tkn-audio-transcriber transcribe "C:\path\to\recordings\2026\20260102T030405+090
 
 作成日時は、記録できるOS（Windowsなど）ではファイルの作成日時、記録できないOSでは更新日時です。サウンドレコーダーでは作成日時が録音の開始時刻になります。保管名と `{year}` はこの日時を使います。
 
-結果は `items` に1ファイルずつ出ます。`status` は `transcribed`、`skipped`、`failed`、`planned`（`--dry-run`）のいずれかです。全体の `status` は、失敗がなければ `completed`、一部が失敗すれば `partial`、成功がなく失敗があれば `failed`、`--dry-run` では `planned` です。失敗が1件でもあれば終了コードは `2` です。
+結果は `items` に1ファイルずつ出ます。`status` は `transcribed`、`skipped`、`failed`、`planned`（`--dry-run`）のいずれかです。source に `correction` があれば、`correction.status`（`corrected`、`unchanged`、`failed`、`planned`）も出ます。全体の `status` は、失敗がなければ `completed`、一部が失敗すれば（直すのに失敗した場合を含む）`partial`、成功がなく失敗があれば `failed`、`--dry-run` では `planned` です。失敗が1件でもあれば終了コードは `2` です（`failures_count`・`correction_failures_count`）。
 
 cloud profile の source があるのに `--allow-cloud-upload` がない場合は、どのファイルもコピー・送信する前に停止します。`pull` は source ごとの profile を使うため、`--profile` は指定できません。
 
@@ -412,9 +414,49 @@ heartbeatは既定60秒です。
 `--heartbeat-seconds`または設定fileで変更できます。
 これは長いASR処理が生存していることを示しますが、ASRの強制timeoutではありません。
 
+### `correct`
+
+保存した文字起こしの誤りを、生成AIで直します。直すのは、音声認識が誤った固有名詞・人名・製品名・専門用語と、その表記だけです。言い回し・語順・言いよどみは直しません。生成AIには文字起こしの本文と参考テキストを渡します。音声は渡しません。[生成AIの接続先](#生成aiの接続先を設定するgenai_profiles)を用意してから実行してください。
+
+```powershell
+# 生成AIに送る内容・接続先・回数を確認する（通信・保存なし）
+tkn-audio-transcriber correct `
+  "C:\path\to\transcripts\meeting_0123456789ab\transcript_cloud_azure-ja_abcdef012345.jsonl" --dry-run
+
+# 用語集や議題などの参考テキストを付けて直す。--context-file は繰り返せる
+tkn-audio-transcriber correct `
+  "C:\path\to\transcripts\meeting_0123456789ab\transcript_cloud_azure-ja_abcdef012345.jsonl" `
+  --context-file "C:\path\to\glossary.txt" --context-file "C:\path\to\agenda.txt"
+
+# 元の文字起こしに戻す
+tkn-audio-transcriber correct `
+  "C:\path\to\transcripts\meeting_0123456789ab\transcript_cloud_azure-ja_abcdef012345.jsonl" --revert
+```
+
+文字起こしと同時に直すときは、`transcribe` に `--correct` を付けます。`--context-file`・`--genai-profile` も使えます。接続先と参考テキストは文字起こしの前に確かめるので、設定の誤りで文字起こしの料金を無駄にしません。文字起こしの後に直すのに失敗したときは、文字起こしは保存したまま終了コード `2` で止まります。`correct` で直し直してください。
+
+```powershell
+tkn-audio-transcriber transcribe "C:\path\to\meeting.m4a" --profile cloud/azure-ja `
+  --correct --context-file "C:\path\to\glossary.txt" --allow-cloud-upload
+```
+
+`pull` では、source に [`correction`](#入力フォルダを設定するsources) を書くと、新しい文字起こしを直します。
+
+直し方と保存するファイルは次のとおりです。
+
+- 生成AIは、セグメントごとに「元の文字列・直した文字列・種類・理由」の一覧を返します。元の文字列がそのセグメントに一字違わずあることを確かめてから当てます。ないもの、ほかの置換と重なるもの、50文字を超えるもの、改行を含むものなどは退け、理由とともに記録します。同じセグメントに同じ文字列が何度もあれば、そのすべてを置き換えます。ただし、英数字で始まる・終わる文字列は、より長い英単語や数字の途中（`Netflix` の中の `Net` など）では置き換えません。
+- `transcript_*.jsonl` は書き換えず、音声認識の元の文のまま残します。`transcript_*.md`・`.txt`・`.srt` を、JSONLに置換を当てた内容で作り直します。`.md` はFrontmatterを保ち、`corrections:` に変換ログの名前を足します。時刻と区切りは変わりません。
+- 変換ログ `transcript_*.corrections.json` を同じフォルダに作り、manifestに新しいハッシュとともに記録します。`validate` は直した後も通ります。同じ設定で `transcribe` を再実行すると、直した成果物を `unchanged` として残します。
+- 変換ログには、実行ごとに、接続先・モデル・参考テキストのパスとハッシュ・置換（セグメント番号・時刻・位置）・退けた置換・生成AIの実行記録を残します。後から読んで、どの語がよく誤認識されるかなどの傾向を確かめられます。
+- 直した文字起こしをもう一度直すときは `--redo` を付けます。いつも元のJSONLから直し、前の実行は `superseded` として残します。`--revert` は元の `.md`・`.txt`・`.srt` を同じバイト列で作り直し、実行を `reverted` として残します。
+- 生成した後に `.md`・`.txt`・`.srt` を手で編集していたら（manifestのハッシュと違えば）、直すことも戻すこともせずに止まります。手の編集を消さないためです。`transcribe --overwrite` で書き直したときは、変換ログを残し、当てていた実行を `discarded` にします。
+- 生成AIの応答を待つ間に文字起こしのファイル（JSONLを含む）が変わったら、何も書かずに止まります。書き込むときは `.<文字起こしの名前>.corrections.lock` を作り、同じ文字起こしを同時に書き込もうとした方を止めます。異常終了でこのファイルが残ったときは、ほかに直していないことを確かめてから消してください。途中で書き込めなかったときは、書き込み済みのファイルを元に戻します。
+- 長い文字起こしは、約4万文字ずつに分けて生成AIに渡します。参考テキストは合わせて6万文字までで、指示文と参考テキストを除いた残りにセグメントを詰めます。
+- 生成AIの呼び出しに失敗したときは、ファイルを変えずに止まります。エラーには生成AIの応答を含めません。
+
 ### `transcribe --suggest-phrases`
 
-文字起こしに用語候補ファイルの生成を追加します。旧 `prepare` はこのオプションに、旧 `phrases suggest` は単体コマンド `suggest-phrases` に置き換わりました。[生成AIの接続設定](#suggest-phrases)を用意してから実行してください。
+文字起こしに用語候補ファイルの生成を追加します。旧 `prepare` はこのオプションに、旧 `phrases suggest` は単体コマンド `suggest-phrases` に置き換わりました。[生成AIの接続先](#生成aiの接続先を設定するgenai_profiles)を用意してから実行してください。
 
 ```powershell
 tkn-audio-transcriber transcribe --suggest-phrases "C:\path\to\meeting.m4a" --profile cloud/azure-ja `
@@ -426,7 +468,7 @@ tkn-audio-transcriber transcribe --suggest-phrases "C:\path\to\meeting.m4a" --pr
 
 文字起こしには `transcribe` と同じ処理を使います。同じ音声・認識設定・用語リストなら、認識品質を下げる簡易処理にはなりません。生成AIは保存された文字起こしから用語候補を作るだけで、文字起こし本文を書き換えません。
 
-`--suggest-phrases` を指定すると、通常の認識オプションに加え、`--generation-profile`、`--context-file`、`--max-candidates` を指定できます。既存の設定や `--phrase-file` の用語は初回の認識にも適用されます。
+`--suggest-phrases` を指定すると、通常の認識オプションに加え、`--genai-profile`、`--context-file`（1つ）、`--max-candidates` を指定できます。`--correct` とは併用できません。既存の設定や `--phrase-file` の用語は初回の認識にも適用されます。
 
 `--dry-run` では通信・保存・モデル取得を行わず、両工程の設定を検査します。生成AIの入力トークン数・費用はこの段階では見積もりません。保存済みJSONLの見積もりは `suggest-phrases --dry-run` で確認できます。`--json` では両工程の結果をまとめたJSONを出力します。
 
@@ -448,47 +490,10 @@ tkn-audio-transcriber transcribe "C:\path\to\meeting.m4a" --profile cloud/azure-
 推測した訂正は元文からの抽出と区別し、引用が実際の発言テキストに含まれることを検査します。
 時刻は元のJSONLから付けるため、候補を確認する箇所を探せます。
 用語指定による改善は保証されないので、初回と再認識の結果は別フォルダに残してください。
+文字起こしを直接直したいときは、[`correct`](#correct) を使います。
 
-生成AIの接続先は、このCLIの設定の `genai_profiles` に書きます。
-[tkn-genai-bridge](https://github.com/tuckn/tkn_genai_bridge) は、依存として固定したライブラリとしてだけ使います。
-Bridgeの設定ファイル（`~/.tkn/genai_bridge/config.yaml`）は読まないので、Bridgeを別に入れて設定する手順は要りません。
-CLIで動く生成AI（Codex・Claude Code・GitHub Copilot・Antigravity）は、それぞれのCLIのサインインをそのまま使います。
-次は組み込みの値です。書かなくても同じ値になります。
-
-```yaml
-schema_version: "4.0.0"
-
-genai_profiles:
-  codex-default:
-    provider: codex
-    model: null  # null: 生成AIの既定のモデル
-  claude-default:
-    provider: claude-code
-    model: null
-  copilot-default:
-    provider: github-copilot
-    model: null
-  antigravity-default:
-    provider: antigravity
-    model: null
-
-generation:
-  active_profile: codex
-  profiles:
-    codex:
-      genai_profile: codex-default
-  max_candidates: 30
-```
-
-- `genai_profiles` の各項目には、tkn-genai-bridge の `Profile` の設定（`provider`・`model`・`reasoning_effort`・`timeout_seconds`・`cli`・`ollama`・`azure` など）を書きます。生成するときに検証し、誤りは項目の場所とエラーの種類だけを示すerrorにします（値は表示しません）。数値でない `.nan` などの値は、設定を読むときにerrorにします。
-- 後の設定ファイルは、同じ名前の接続先に項目ごとに重ねます。たとえば、`codex-default` の `reasoning_effort` だけを変えられます。
-- `cli.executable` の相対パスは、それを書いた設定ファイルのフォルダを基準にします。`codex` のような名前だけなら、PATHから探します。基準がはっきりしない `D:codex.exe` のような書き方はerrorです。
-- `generation.profiles.<name>.genai_profile` には、`genai_profiles` の名前を書きます。`genai_profiles` にない名前はerrorになり、ほかの接続先に切り替えません。
-- `genai_profiles`・`genai_profile` を使う設定ファイルは、`schema_version` を `"4.0.0"` にしてください。以前の `bridge_profile` はerrorになります。
-
-`--generation-profile` はこのCLIの `generation.profiles` の名前です。
-音声認識に使う `--profile cloud/azure-ja` とは別の選択です。
-`local_only: true` のOllamaの接続先のほかは、文字起こし・参考テキストが生成AIのサービスへ送信されます。
+[生成AIの接続先](#生成aiの接続先を設定するgenai_profiles)は `generation.genai_profile` で選びます。候補の上限は `generation.max_candidates`（既定 `30`）です。
+`--genai-profile` は `genai_profiles` の名前で、その回だけ接続先を変えます。音声認識に使う `--profile cloud/azure-ja` とは別の選択です。
 
 次のPowerShell例では、初回の出力を `first`、確認用ファイルを `vocabulary`、
 修正後の用語による再認識結果を `second` に保存します。
@@ -818,6 +823,42 @@ uploadが完了した可能性があるのにresponseがない場合は、課金
 Azure error時に`faster-whisper`へfallbackしません。
 別途local実行する場合は利用者が`local/NAME` profileを明示的に選びます。
 
+## 生成AIの接続先を設定する（genai_profiles）
+
+[`correct`](#correct) と [`suggest-phrases`](#suggest-phrases) が使う生成AIの接続先は、このCLIの設定の `genai_profiles` に書き、`generation.genai_profile` で選びます。
+[tkn-genai-bridge](https://github.com/tuckn/tkn_genai_bridge) は、依存として固定したライブラリとしてだけ使います。
+Bridgeの設定ファイル（`~/.tkn/genai_bridge/config.yaml`）は読まないので、Bridgeを別に入れて設定する手順は要りません。
+CLIで動く生成AI（Codex・Claude Code・GitHub Copilot・Antigravity）は、それぞれのCLIのサインインをそのまま使います。
+次は組み込みの値です。書かなくても同じ値になります。
+
+```yaml
+schema_version: "4.0.0"
+
+genai_profiles:
+  codex-default:
+    provider: codex
+    model: null  # null: 生成AIの既定のモデル
+  claude-default:
+    provider: claude-code
+    model: null
+  copilot-default:
+    provider: github-copilot
+    model: null
+  antigravity-default:
+    provider: antigravity
+    model: null
+
+generation:
+  genai_profile: codex-default  # genai_profiles の名前。--genai-profile でその回だけ変える
+  max_candidates: 30  # suggest-phrases の候補の上限
+```
+
+- `genai_profiles` の各項目には、tkn-genai-bridge の `Profile` の設定（`provider`・`model`・`reasoning_effort`・`timeout_seconds`・`cli`・`ollama`・`azure` など）を書きます。生成するときに検証し、誤りは項目の場所とエラーの種類だけを示すerrorにします（値は表示しません）。数値でない `.nan` などの値は、設定を読むときにerrorにします。
+- 後の設定ファイルは、同じ名前の接続先に項目ごとに重ねます。たとえば、`codex-default` の `reasoning_effort` だけを変えられます。
+- `cli.executable` の相対パスは、それを書いた設定ファイルのフォルダを基準にします。`codex` のような名前だけなら、PATHから探します。基準がはっきりしない `D:codex.exe` のような書き方はerrorです。
+- `generation.genai_profile` と `--genai-profile` には、`genai_profiles` の名前を書きます。`genai_profiles` にない名前はerrorになり、ほかの接続先に切り替えません。
+- `local_only: true` のOllamaの接続先のほかは、文字起こし・参考テキストが生成AIのサービスへ送信されます。
+
 ## 入力フォルダを設定する（sources）
 
 [`pull`](#pull) が処理する入力フォルダは、設定の `sources` に名前を付けて書きます。入力フォルダごとに、出力先、プロファイル、原本の保管先を決められます。`sources` は設定schema `"3.2.0"` で追加しました。使うときは、その設定ファイルの `schema_version` を `"3.2.0"` 以上にしてください。`archive.name: created-time-original` は `"3.3.0"` で追加したため、使うときは `"3.3.0"` 以上にしてください。
@@ -850,10 +891,26 @@ sources:
 | `archive.dir` | `archive` を書くとき○ | | 原本の保管先 |
 | `archive.name` | | `created-time` | 保管名。`created-time`、`created-time-original`、`original` のいずれか |
 | `archive.delete_source` | | `false` | `true` なら、保管と文字起こしの成功後に入力ファイルを消す |
+| `correction` | | なし | 書くと、新しい文字起こしを [`correct`](#correct) と同じ方法で直す。参考テキストなしで直すなら `correction: {}` |
+| `correction.context_files` | | `[]` | 直すときに生成AIへ渡す参考テキスト（UTF-8）。用語集など |
 
 - `output_dir` と `archive.dir` には `{year}` を書けます。ファイルの作成日時の年（例: `2026`）に置き換わります。ほかの `{...}` はerrorです。
 - 相対パスは、その source を書いた設定ファイルのフォルダを基準にします。`~` はホームフォルダです。
 - `archive` を書かなければ、入力ファイルをその場で文字起こしし、入力ファイルは残します。入力ファイルを消せるのは、`archive` で保管したときだけです。
+- `correction` は `generation.genai_profile` の接続先を使います。接続先と参考テキストは、どのファイルもコピー・送信する前に確かめます。直すのに失敗しても、文字起こし・保管・入力ファイルの削除はそのまま進め、結果の `correction.status` を `failed` にします。後で [`correct`](#correct) で直せます。すでに直した文字起こしは、もう一度直しません。`correction` を使う設定ファイルは `schema_version` を `"4.0.0"` 以上にしてください。
+
+次は、1人喋りの録音を、自分の用語集を参考に直す例です。
+
+```yaml
+sources:
+  monologues:
+    input_dir: ~/Documents/Sound Recordings
+    profile: cloud/azure-ja
+    output_dir: 'C:\path\to\monologues\{year}'
+    correction:
+      context_files:
+        - ./vocabulary/monologue.txt
+```
 - 後の設定ファイルに同じ名前の source があれば、その source 全体を置き換えます（項目ごとには混ぜません）。値を空にした名前（`recordings:`）は、前の設定ファイルの source を取り消します。
 
 ## 設定の優先順位
@@ -874,14 +931,14 @@ unknown key、不正type、未対応`schema_version`はerrorです。
 
 application-owned設定の独立したschema versionは`"4.0.0"`です。
 3要素のstringを必須とします。
-`"4.0.0"` では、生成AIの接続先を `genai_profiles` に書くようにし、`generation.profiles.<name>.bridge_profile` を `genai_profile` に改名しました。
-`generation` を書けるschema 2以降のどの版でも、`bridge_profile` は改名の手順を示すerrorになります。
-`bridge_profile` を使っていない`3.0.x`～`3.3.x`設定は編集不要です。構造を変えない新しいPatch（例: `"4.0.7"`）も受け付けます。`sources` を使う設定ファイルは`"3.2.0"`以上、`archive.name: created-time-original` を使う設定ファイルは`"3.3.0"`以上、`genai_profiles`・`genai_profile` を使う設定ファイルは`"4.0.0"`以上が必要です。
+`"4.0.0"` では、生成AIの接続先を `genai_profiles` に書き、`generation.genai_profile` で直接選ぶようにしました。`generation.active_profile` と `generation.profiles`（中の `bridge_profile` を含む）はなくなりました。
+`generation` を書けるschema 2以降のどの版でも、`generation.active_profile`・`generation.profiles` は書き換え方を示すerrorになります。
+これらを使っていない`3.0.x`～`3.3.x`設定は編集不要です。構造を変えない新しいPatch（例: `"4.0.7"`）も受け付けます。`sources` を使う設定ファイルは`"3.2.0"`以上、`archive.name: created-time-original` を使う設定ファイルは`"3.3.0"`以上、`genai_profiles`・`generation.genai_profile`・`sources.<name>.correction` を使う設定ファイルは`"4.0.0"`以上が必要です。
 新しいMinor/Major、検証済み移行がない古いversion、不正形式、version欠落は、必要なactionを示すerrorになります。
 
 平坦な`1.0.x`、`1.1.x`、旧integer `schema_version: 1`、混在profile形式の`2.0.x`はin-memoryでlocal/cloud分離構造へ変換して読み取り、warningを表示します。
 読み取りだけではfileを書き換えません。
-schema 1・2に`config migrate`を実行すると、validation、backup、atomic replacementを経てschema `"4.0.0"`を永続化します。移した設定ファイルには `genai_profiles` を書かず、`generation` は元の設定ファイルに書いた項目だけを書きます。ユーザー設定の接続先を上書きしないためです。schema 2の設定ファイルで `bridge_profile` を使っていたら、その設定ファイルのままキーを `genai_profile` に改名してから `config migrate` を実行します。schema 3の設定ファイルは書き換えず、`unchanged` を返します。
+schema 1・2に`config migrate`を実行すると、validation、backup、atomic replacementを経てschema `"4.0.0"`を永続化します。移した設定ファイルには `genai_profiles` を書かず、`generation` は元の設定ファイルに書いた項目だけを書きます。ユーザー設定の接続先を上書きしないためです。schema 2の設定ファイルで `generation.profiles` を使っていたら、その設定ファイルのまま `generation.genai_profile` に書き換えてから `config migrate` を実行します。schema 3の設定ファイルは書き換えず、`unchanged` を返します。
 
 ## 再実行と失敗時の動作
 
@@ -935,12 +992,13 @@ cloud profileは認証情報を再利用できますが、ログイン・MFAが�
 終了コードは、成功`0`、引数・設定・入力・検証error`2`、中断`130`、想定外error`1`です。
 既存の cleanup は個別削除失敗を `failures` に収集して終了 `0` を返す契約を維持します。
 自動処理では `failures_count` も確認してください。`review_required` は確認待ちの正常終了 `0` です。
-`pull` は、処理できなかったファイルが1件でもあれば終了コード `2` を返します（結果の `failures_count` と同じ件数）。
+`pull` は、処理できなかったファイルか、直すのに失敗したファイルが1件でもあれば終了コード `2` を返します（結果の `failures_count`・`correction_failures_count`）。
 
 ## 制約とプライバシー
 
 - 話者分離は Azure Speech のみ対応します。ローカル認識では話者ラベルを付けません。
-- 会議要約や生成 AI による文章の補正は行いません。
+- 会議要約や生成 AI による文章の補正は行いません。[`correct`](#correct) が直すのは、固有名詞・用語・表記の誤りだけです。
+- [`correct`](#correct)・[`suggest-phrases`](#suggest-phrases) と `pull` の `correction` は、文字起こしの本文と参考テキストを生成AIのサービスへ送ります（`local_only: true` のOllamaを除く）。変換ログには、置換の前後の文字列と参考テキストのパスが残ります。
 - 未取得のローカルモデルを使う初回実行には Hugging Face への接続が必要です。オフライン環境では事前に `model download` で取得してください。
 - Azure 実行では派生 FLAC 音声を設定済み Speech リソースへ送信し、利用料が発生し得ます。入力と出力予定を `--dry-run` で確認し、送信する実行に `--allow-cloud-upload` を付けてください。
 - ログと Azure のエラーには、HTTP 状態、エラーコード、要求 ID、試行回数などの診断情報を記録します。音声、認識本文、トークン、Authorization ヘッダー、要求・応答本文は記録しません。

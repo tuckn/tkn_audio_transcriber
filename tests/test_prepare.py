@@ -157,13 +157,13 @@ def test_invalid_generation_inputs_fail_before_transcription(
     elif problem == "limit":
         kwargs["max_candidates"] = 0
     elif problem == "profile":
-        kwargs["generation_profile"] = "missing"
+        kwargs["genai_profile"] = "missing"
     elif problem in ("connection", "undefined"):
         config = workflow["config"]
         if problem == "connection":
             config.genai_profiles["codex-default"]["timeout_seconds"] = "invalid"
         else:
-            config.generation["profiles"]["codex"]["genai_profile"] = "codex-high"
+            config.generation["genai_profile"] = "codex-high"
     else:
         plan = run(workflow, dry_run=True)
         Path(plan["suggestions"]["output_dir"]).mkdir(parents=True)
@@ -201,8 +201,8 @@ def test_prepare_cli_json_and_options(
         "--azure-speech-endpoint",
         "https://example.cognitiveservices.azure.com/",
         "--allow-cloud-upload",
-        "--generation-profile",
-        "codex",
+        "--genai-profile",
+        "codex-default",
         "--max-candidates",
         "10",
         "--json",
@@ -228,7 +228,7 @@ def test_prepare_cli_json_and_options(
     assert list(media.glob("transcript_*.jsonl"))
     assert result["status"] == "review_required"
     assert result["suggestions"]["max_candidates"] == 10
-    assert result["suggestions"]["generation_profile"] == "codex"
+    assert result["suggestions"]["genai_profile"] == "codex-default"
     assert main(args) == 2
     assert json.loads(capsys.readouterr().out)["status"] == "failed"
     assert len(workflow["azure"]) == len(workflow["generation"]) == 1

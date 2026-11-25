@@ -8,11 +8,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- `correct` コマンドを追加しました。保存した文字起こしの固有名詞・人名・製品名・専門用語と、その表記の誤りを、生成AIで単語単位に直します。生成AIが返す置換は、元の文字列がそのセグメントにあることを確かめてから当て、言い回しは直しません。`--context-file`（繰り返し可）で用語集や議題などの参考テキストを渡せます。`suggest-phrases` で候補を作って `phrase_list` で文字起こしし直す流れは手間がかかり、`phrase_list` はAzureでしか使えず、関係ない箇所まで補完されることがあったためです。
+- 直しても `transcript_*.jsonl` は音声認識の元の文のまま残し、`.md`・`.txt`・`.srt` を直した内容で作り直します。変換ログ `transcript_*.corrections.json` に、実行ごとの接続先・モデル・参考テキスト・置換・退けた置換を残し、manifestに新しいハッシュとともに記録します。`correct --revert` で元のファイルに戻せ、`--redo` で元のJSONLから直し直せます。生成した後に手で編集した文字起こしは、直すことも戻すこともしません。manifest schema は 4 のままです。
+- `transcribe --correct` で、文字起こしの後に続けて直せます。接続先と参考テキストは文字起こしの前に確かめます。`pull` では、source に `correction`（`context_files` を書ける）を書くと、新しい文字起こしを直します。直すのに失敗しても文字起こしはそのまま残し、結果の `correction_failures_count` に数えて終了コード `2` を返します。
+
 ### Changed
 
-- 生成AIの接続先を、このCLIの設定の `genai_profiles` に書くようにしました（設定の非互換変更）。tkn-genai-bridge の設定ファイル `~/.tkn/genai_bridge/config.yaml` は読まず、検証した接続先を Bridge の `Runtime` に直接渡します。このCLIを入れるだけで `suggest-phrases`・`transcribe --suggest-phrases` を使え、Bridge を別に入れて設定する手順は要りません。ほかの tkn 系 CLI（tkn_doc_summarizer など）と同じ作りにそろえるための変更です。組み込みの接続先は `codex-default`・`claude-default`・`copilot-default`・`antigravity-default` です。後の設定ファイルは、同じ名前の接続先に項目ごとに重ねます。`cli.executable` の相対パスは、それを書いた設定ファイルのフォルダを基準にします。接続先の誤りは、生成の前に、項目の場所とエラーの種類だけを示すerrorにします（値は表示しません）。
-- 設定schemaを `4.0.0` にし、`generation.profiles.<name>.bridge_profile` を `genai_profile` に改名しました。`bridge_profile` を書いた設定ファイルは、schema 2以降のどの版でも、改名の手順を示すerrorになります。キーを `genai_profile` に変え、`schema_version` を `"4.0.0"` にしてください。Bridge の設定で `codex-default` などの中身を変えていた場合や、組み込みにない名前を使っていた場合は、その接続先を `genai_profiles` に写してください。`genai_profiles` にない名前はerrorになり、ほかの接続先に切り替えません。`bridge_profile` を使っていない `3.0.x`～`3.3.x` の設定は、編集せずに使えます。schema 2 の設定で `bridge_profile` を使っていたら、キーを改名してから `config migrate` を実行してください。schema 1・2 の設定を `config migrate` で移すときは、`genai_profiles` を書き出さず、`generation` は元の設定に書いた項目だけを書き出します（ユーザー設定の接続先を上書きしないため）。
-- `suggest-phrases`・`transcribe --suggest-phrases` の結果と、候補フォルダの `manifest.json` の `bridge_profile` を `genai_profile` に改名し、`manifest.json` の `schema_version` を `2.0.0` にしました。以前に作った候補フォルダは書き換えません。`config list` は `genai_profiles` とその出典も表示します。更新後は `uv tool install . --reinstall` を実行してください。
+- 生成AIの接続先を、このCLIの設定の `genai_profiles` に書くようにしました（設定の非互換変更）。tkn-genai-bridge の設定ファイル `~/.tkn/genai_bridge/config.yaml` は読まず、検証した接続先を Bridge の `Runtime` に直接渡します。このCLIを入れるだけで `correct`・`suggest-phrases` を使え、Bridge を別に入れて設定する手順は要りません。ほかの tkn 系 CLI（tkn_doc_summarizer など）と同じ作りにそろえるための変更です。組み込みの接続先は `codex-default`・`claude-default`・`copilot-default`・`antigravity-default` です。後の設定ファイルは、同じ名前の接続先に項目ごとに重ねます。`cli.executable` の相対パスは、それを書いた設定ファイルのフォルダを基準にします。接続先の誤りは、生成の前に、項目の場所とエラーの種類だけを示すerrorにします（値は表示しません）。
+- 設定schemaを `4.0.0` にし、接続先を `generation.genai_profile` で直接選ぶようにしました。`generation.active_profile` と `generation.profiles`（中の `bridge_profile` を含む）はなくなり、書いた設定ファイルは、schema 2以降のどの版でも、書き換え方を示すerrorになります。`generation.genai_profile: <genai_profilesの名前>` に書き換え、`schema_version` を `"4.0.0"` にしてください。Bridge の設定で `codex-default` などの中身を変えていた場合や、組み込みにない名前を使っていた場合は、その接続先を `genai_profiles` に写してください。`genai_profiles` にない名前はerrorになり、ほかの接続先に切り替えません。これらを使っていない `3.0.x`～`3.3.x` の設定は、編集せずに使えます。schema 2 の設定は、その設定ファイルのまま書き換えてから `config migrate` を実行してください。schema 1・2 の設定を `config migrate` で移すときは、`genai_profiles` を書き出さず、`generation` は元の設定に書いた項目だけを書き出します（ユーザー設定の接続先を上書きしないため）。
+- `--generation-profile` を `--genai-profile`（`genai_profiles` の名前を渡す）に変えました。古いオプションは、新しいオプションを示すerrorになります。`suggest-phrases`・`transcribe --suggest-phrases` の結果と、候補フォルダの `manifest.json` では、`generation_profile`・`bridge_profile` をなくして `genai_profile` を記録し、`manifest.json` の `schema_version` を `2.0.0` にしました。以前に作った候補フォルダは書き換えません。`config list` は `genai_profiles` とその出典も表示します。更新後は `uv tool install . --reinstall` を実行してください。
 
 ### Fixed
 

@@ -250,13 +250,48 @@ def _parser() -> argparse.ArgumentParser:
               "uses configured output root; excludes --overwrite."),
     )
     transcribe_command.add_argument(
-        "--generation-profile", help="Generation profile (requires --suggest-phrases)."
+        "--correct", action="store_true",
+        help=("Then correct proper nouns and terms with generative AI; the JSONL keeps the "
+              "original text. Excludes --suggest-phrases."),
     )
     transcribe_command.add_argument(
-        "--context-file", type=Path, help="UTF-8 background text (requires --suggest-phrases)."
+        "--genai-profile",
+        help="genai_profiles name (requires --suggest-phrases or --correct).",
+    )
+    transcribe_command.add_argument(
+        "--generation-profile", dest="removed_generation_profile", help=argparse.SUPPRESS
+    )
+    transcribe_command.add_argument(
+        "--context-file", type=Path, action="append",
+        help=("UTF-8 background text such as a glossary (requires --suggest-phrases or "
+              "--correct; repeat for --correct)."),
     )
     transcribe_command.add_argument(
         "--max-candidates", type=int, help="Maximum candidates (requires --suggest-phrases)."
+    )
+
+    correct = commands.add_parser(
+        "correct", parents=[command_options],
+        help=("Correct proper nouns and terms in a saved transcript with generative AI; "
+              "the JSONL keeps the original text."),
+    )
+    correct.add_argument("transcript", type=Path, help="Transcript JSONL produced by this CLI.")
+    correct.add_argument("--genai-profile", help="genai_profiles name (default: config).")
+    correct.add_argument(
+        "--context-file", type=Path, action="append",
+        help="UTF-8 background text such as a glossary or agenda; repeat to add files.",
+    )
+    correct_mode = correct.add_mutually_exclusive_group()
+    correct_mode.add_argument(
+        "--redo", action="store_true",
+        help="Correct an already corrected transcript again from the original JSONL.",
+    )
+    correct_mode.add_argument(
+        "--revert", action="store_true",
+        help="Restore the original Markdown, text, and SRT; the log keeps every run.",
+    )
+    correct.add_argument(
+        "--dry-run", action="store_true", help="Plan without generation or writes."
     )
 
     suggest = commands.add_parser(
@@ -265,7 +300,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     suggest.add_argument("transcript", type=Path, help="Transcript JSONL produced by this CLI.")
     suggest.add_argument("--output-dir", type=Path, required=True, help="New review directory.")
-    suggest.add_argument("--generation-profile", help="Application generation profile name.")
+    suggest.add_argument("--genai-profile", help="genai_profiles name (default: config).")
+    suggest.add_argument(
+        "--generation-profile", dest="removed_generation_profile", help=argparse.SUPPRESS
+    )
     suggest.add_argument(
         "--context-file", type=Path, help="Optional UTF-8 meeting background text."
     )
@@ -360,6 +398,26 @@ def _config_command_path(args: argparse.Namespace) -> Path:
     return path
 
 
+def _correct_after_transcription(
+    args: argparse.Namespace, config: ResolvedConfig, jsonl: Path, logger: logging.Logger
+) -> dict[str, Any]:
+    from .corrections import correct_transcript
+
+    try:
+        return correct_transcript(
+            jsonl, config=config, genai_profile=args.genai_profile,
+            context_files=args.context_file or [], if_needed=True, logger=logger,
+        )
+    except AudioTranscriberError as exc:
+        # Retrying the same command keeps the chosen connection, such as a local-only one.
+        raise AudioTranscriberError(
+            f"Transcription was saved at {jsonl}. Correction failed; run the same "
+            "transcribe --correct command again, which reuses the transcript, or run correct "
+            f"on that JSONL with the same --genai-profile and --context-file options. {exc}",
+            target_path=exc.target_path,
+        ) from None
+
+
 def _warn_in_memory_migrations(config: ResolvedConfig, logger: logging.Logger) -> None:
     for source in config.config_sources:
         migration = source["migration"]
@@ -417,14 +475,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = parser.parse_args(raw, namespace=args)
         if args.quiet and args.verbose:
             parser.error("--quiet and --verbose cannot be combined")
+        if getattr(args, "removed_generation_profile", None) is not None:
+            parser.error(
+                "--generation-profile was removed; pass a genai_profiles name with "
+                "--genai-profile instead"
+            )
         if args.command == "transcribe":
+            if args.suggest_phrases and args.correct:
+                parser.error("--suggest-phrases cannot be combined with --correct")
             if args.suggest_phrases:
                 if args.overwrite:
                     parser.error("--suggest-phrases cannot be combined with --overwrite")
-            elif any(value is not None for value in (
-                args.generation_profile, args.context_file, args.max_candidates
-            )):
-                parser.error("Generation options require --suggest-phrases")
+                if args.context_file and len(args.context_file) > 1:
+                    parser.error("--suggest-phrases accepts one --context-file")
+            elif args.max_candidates is not None:
+                parser.error("--max-candidates requires --suggest-phrases")
+            if not (args.suggest_phrases or args.correct) and (
+                args.genai_profile is not None or args.context_file
+            ):
+                parser.error(
+                    "--genai-profile and --context-file require --suggest-phrases or --correct"
+                )
         if args.command == "config":
             if args.config_command == "init":
                 show(
@@ -503,19 +574,57 @@ def main(argv: Sequence[str] | None = None) -> int:
 
                 payload = prepare_transcription(
                     args.audio, config=config, logger=logger,
-                    generation_profile=args.generation_profile,
-                    context_file=args.context_file, max_candidates=args.max_candidates,
+                    genai_profile=args.genai_profile,
+                    context_file=args.context_file[0] if args.context_file else None,
+                    max_candidates=args.max_candidates,
                     dry_run=args.dry_run, allow_cloud_upload=args.allow_cloud_upload,
                 )
                 show(payload)
                 return 0
+            correction_plan: dict[str, Any] | None = None
+            if args.correct:
+                from .corrections import preflight_correction
+
+                # Fail on a wrong connection or context before paying for a transcription.
+                correction_plan = preflight_correction(
+                    config, genai_profile=args.genai_profile,
+                    context_files=args.context_file or [],
+                )
             result = TranscriptionPipeline(config=config, logger=logger).transcribe(
                 args.audio,
                 dry_run=args.dry_run,
                 overwrite=args.overwrite,
                 allow_cloud_upload=args.allow_cloud_upload,
             )
-            show(result.to_dict())
+            payload = result.to_dict()
+            if correction_plan is not None:
+                payload["correction"] = (
+                    {**correction_plan, "status": "planned", "network_calls": 0}
+                    if args.dry_run
+                    else _correct_after_transcription(args, config, result.outputs.jsonl, logger)
+                )
+            show(payload)
+            return 0
+        if args.command == "correct":
+            from .corrections import correct_transcript, revert_corrections
+
+            if args.revert:
+                if args.genai_profile is not None or args.context_file or args.dry_run:
+                    parser.error(
+                        "--revert cannot be combined with --genai-profile, --context-file, "
+                        "or --dry-run"
+                    )
+                show(revert_corrections(args.transcript))
+                return 0
+            config = _resolve(args)
+            _warn_in_memory_migrations(config, logger)
+            show(
+                correct_transcript(
+                    args.transcript, config=config, genai_profile=args.genai_profile,
+                    context_files=args.context_file or [], dry_run=args.dry_run,
+                    redo=args.redo, logger=logger,
+                )
+            )
             return 0
         if args.command == "suggest-phrases":
             from .phrase_suggestions import suggest_phrases
@@ -527,7 +636,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             payload = suggest_phrases(
                 args.transcript, output_dir=args.output_dir, config=config,
-                generation_profile=args.generation_profile, context_file=args.context_file,
+                genai_profile=args.genai_profile, context_file=args.context_file,
                 max_candidates=args.max_candidates, dry_run=args.dry_run,
             )
             show(payload)
@@ -560,7 +669,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ignore_min_age=args.ignore_min_age,
             )
             show(payload)
-            return 2 if payload["failures_count"] else 0
+            return 2 if payload["failures_count"] or payload["correction_failures_count"] else 0
         if args.command == "validate":
             show(validate_artifact(args.manifest, verify_source=args.verify_source))
             return 0

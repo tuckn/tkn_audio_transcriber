@@ -17,7 +17,7 @@ def prepare_transcription(
     *,
     config: ResolvedConfig,
     logger: logging.Logger,
-    generation_profile: str | None = None,
+    genai_profile: str | None = None,
     context_file: Path | None = None,
     max_candidates: int | None = None,
     dry_run: bool = False,
@@ -31,7 +31,7 @@ def prepare_transcription(
         raise ValidationError("Workflow output path is not a directory")
     generation_plan = preflight_phrase_generation(
         config,
-        generation_profile=generation_profile,
+        genai_profile=genai_profile,
         context_file=context_file,
         max_candidates=max_candidates,
     )
@@ -64,7 +64,7 @@ def prepare_transcription(
             result.outputs.jsonl,
             output_dir=vocabulary,
             config=config,
-            generation_profile=generation_profile,
+            genai_profile=genai_profile,
             context_file=context_file,
             max_candidates=max_candidates,
         )

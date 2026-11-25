@@ -53,6 +53,11 @@ def public_result(payload: dict[str, Any]) -> dict[str, Any]:
         result["review_hint"] = (
             "Review review.md and edit phrases.txt before running transcribe --phrase-file."
         )
+    if result.get("status") == "corrected":
+        result["review_hint"] = (
+            "Check the changes in the corrections log; run correct --revert on the JSONL to "
+            "restore the original text."
+        )
     return result
 
 

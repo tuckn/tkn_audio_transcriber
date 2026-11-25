@@ -522,12 +522,23 @@ def test_azure_profile_dry_run_does_not_require_upload_approval(
 
 
 @pytest.mark.parametrize("option", [
-    ["--generation-profile", "codex"],
+    ["--genai-profile", "codex-default"],
     ["--context-file", "context.txt"],
     ["--max-candidates", "10"],
+    ["--correct", "--max-candidates", "10"],
+    ["--correct", "--suggest-phrases"],
+    ["--suggest-phrases", "--context-file", "a.txt", "--context-file", "b.txt"],
 ])
 def test_generation_options_require_suggest_flag(option: list[str]) -> None:
     assert main(["transcribe", "audio.wav", *option]) == 2
+
+
+@pytest.mark.parametrize("command", [["transcribe", "audio.wav"], ["suggest-phrases", "t.jsonl"]])
+def test_removed_generation_profile_option_names_its_replacement(
+    command: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main([*command, "--output-dir", "out", "--generation-profile", "codex", "--json"]) == 2
+    assert "--genai-profile" in json.loads(capsys.readouterr().out)["error"]["message"]
 
 
 @pytest.mark.parametrize("command", ["prepare", "phrases"])
@@ -539,8 +550,11 @@ def test_vocabulary_help_uses_consistent_names(capsys: object) -> None:
     with pytest.raises(SystemExit) as caught:
         main(["transcribe", "--help"])
     assert caught.value.code == 0
-    assert "--suggest-phrases" in capsys.readouterr().out  # type: ignore[attr-defined]
+    transcribe_help = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "--suggest-phrases" in transcribe_help and "--correct" in transcribe_help
+    assert "--generation-profile" not in transcribe_help
     with pytest.raises(SystemExit) as caught:
         main(["suggest-phrases", "--help"])
     assert caught.value.code == 0
-    assert "--generation-profile" in capsys.readouterr().out  # type: ignore[attr-defined]
+    suggest_help = capsys.readouterr().out  # type: ignore[attr-defined]
+    assert "--genai-profile" in suggest_help and "--generation-profile" not in suggest_help

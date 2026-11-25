@@ -6,7 +6,7 @@ import logging
 import math
 import os
 from collections.abc import Callable
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from dataclasses import replace
 from datetime import datetime
 from functools import partial
@@ -52,6 +52,10 @@ from .logging_config import log_success
 from .model_store import ensure_local_model
 from .models import OutputPaths, Segment, TranscriptionResult
 from .paths import job_directory, output_paths
+from .rendering import format_timestamp, markdown_transcript_lines
+from .rendering import render_jsonl as _render_jsonl
+from .rendering import render_srt as _render_srt
+from .rendering import render_text as _render_text
 from .validation import (
     AUDIO_CONVERSION,
     MANIFEST_SCHEMA_VERSION,
@@ -68,22 +72,6 @@ class AzureRecognizer(Protocol):
 
 
 AzureRecognizerFactory = Callable[[AzureSpeechTranscriptionConfig, logging.Logger], AzureRecognizer]
-
-
-def format_timestamp(seconds: float) -> str:
-    milliseconds = max(0, int(round(float(seconds) * 1000)))
-    hours, remainder = divmod(milliseconds, 3_600_000)
-    minutes, remainder = divmod(remainder, 60_000)
-    whole_seconds, _ = divmod(remainder, 1000)
-    return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d}"
-
-
-def format_srt_timestamp(seconds: float) -> str:
-    milliseconds = max(0, int(round(float(seconds) * 1000)))
-    hours, remainder = divmod(milliseconds, 3_600_000)
-    minutes, remainder = divmod(remainder, 60_000)
-    whole_seconds, millis = divmod(remainder, 1000)
-    return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d},{millis:03d}"
 
 
 def _fingerprint_settings(config: ResolvedConfig) -> dict[str, object]:
@@ -129,8 +117,14 @@ def _fingerprint(source_hash: str, source_size: int, config: ResolvedConfig) -> 
 def _load_segments(path: Path) -> list[Segment]:
     if not path.exists():
         return []
+    return parse_segments(path.read_text(encoding="utf-8"), path)
+
+
+def parse_segments(text: str, path: Path) -> list[Segment]:
+    """Segments of JSONL text read from `path`, which is named in errors."""
     segments: list[Segment] = []
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    # Only "\n" ends a record: text such as U+2028 stays inside the JSON string.
+    for line_number, line in enumerate(text.split("\n"), start=1):
         if not line.strip():
             continue
         try:
@@ -204,14 +198,6 @@ def _bound_local_segments(
     return bounded, clipped_count, dropped_count
 
 
-def _segment_text(segment: Segment, *, markdown: bool) -> str:
-    if segment.speaker is None:
-        return segment.text
-    if markdown:
-        return f"[Speaker {segment.speaker}] {segment.text}"
-    return f"Speaker {segment.speaker}: {segment.text}"
-
-
 def _render_markdown(source: Path, config: ResolvedConfig, segments: list[Segment]) -> str:
     transcription = config.transcription
     if isinstance(transcription, LocalTranscriptionConfig):
@@ -243,34 +229,8 @@ def _render_markdown(source: Path, config: ResolvedConfig, segments: list[Segmen
         "## Transcript",
         "",
     ]
-    lines.extend(
-        f"[{format_timestamp(segment.start)} - {format_timestamp(segment.end)}] "
-        f"{_segment_text(segment, markdown=True)}"
-        for segment in segments
-    )
+    lines.extend(markdown_transcript_lines(segments))
     return "\n".join(lines) + "\n"
-
-
-def _render_srt(segments: list[Segment]) -> str:
-    blocks = [
-        (
-            f"{segment.index}\n"
-            f"{format_srt_timestamp(segment.start)} --> "
-            f"{format_srt_timestamp(segment.end)}\n"
-            f"{_segment_text(segment, markdown=False)}\n"
-        )
-        for segment in segments
-    ]
-    return "\n".join(blocks)
-
-
-def _render_text(segments: list[Segment]) -> str:
-    # One recognized phrase per line; speaker labels stay because they are content.
-    return "".join(f"{_segment_text(segment, markdown=False)}\n" for segment in segments)
-
-
-def _render_jsonl(segments: list[Segment]) -> str:
-    return "".join(json.dumps(segment.to_dict(), ensure_ascii=False) + "\n" for segment in segments)
 
 
 def _default_recognizer(model_path: Path, config: LocalTranscriptionConfig) -> SpeechRecognizer:
@@ -518,6 +478,8 @@ class TranscriptionPipeline:
             logger=self.logger,
         )
         tracker.start()
+        # Holds the transcript's publish lock from the first replaced file to the manifest.
+        publishing = ExitStack()
         try:
             tracker.set_stage("disk-preflight")
             required_initial = estimated_initial_scratch_bytes(source_stat.st_size)
@@ -785,13 +747,34 @@ class TranscriptionPipeline:
             if sha256_file(outputs.audio) != audio_hash:
                 raise ValidationError("Saved FLAC hash does not match transcription audio")
 
-            for pending, final in (
+            # The new files are uncorrected. Keep an earlier correction log for its history,
+            # with its applied run marked as discarded; read it before replacing anything.
+            # Imported here because the corrections module imports this one.
+            from .corrections import plan_discard, publish_lock
+
+            publishing.enter_context(publish_lock(outputs.jsonl))
+            discard = plan_discard(outputs.jsonl)
+            replacements = [
                 (pending_markdown, outputs.markdown),
                 (pending_text, outputs.text),
                 (pending_srt, outputs.srt),
                 (pending_jsonl, outputs.jsonl),
-            ):
-                os.replace(pending, final)
+            ]
+            if discard is not None:
+                # First, so a log another program holds stops the run before any output moves.
+                replacements.insert(0, (discard.stage(), discard.path))
+            try:
+                for pending, final in replacements:
+                    os.replace(pending, final)
+            except BaseException:
+                # The old manifest still lists the old log; keep the two matching.
+                if discard is not None:
+                    with suppress(OSError):
+                        discard.restore()
+                for pending, _final in replacements:
+                    with suppress(OSError):
+                        pending.unlink(missing_ok=True)
+                raise
 
             completed_at = datetime.now().astimezone().isoformat(timespec="seconds")
             output_records = {
@@ -808,6 +791,8 @@ class TranscriptionPipeline:
                     ("jsonl", outputs.jsonl),
                 )
             }
+            if discard is not None:
+                output_records["corrections"] = discard.record()
             decoded_audio: dict[str, object] = {
                 **normalized_info.to_dict(),
                 "last_segment_end_seconds": last_segment_end,
@@ -891,6 +876,7 @@ class TranscriptionPipeline:
                 },
             )
             validate_artifact(outputs.manifest, verify_source=True)
+            publishing.close()
 
             if not bool(self.config.values["keep_working_files"]):
                 for working_file in [normalized, cloud_audio, *chunks]:
@@ -914,3 +900,5 @@ class TranscriptionPipeline:
         except BaseException as exc:
             tracker.fail(exc)
             raise
+        finally:
+            publishing.close()

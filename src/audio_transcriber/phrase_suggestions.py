@@ -10,16 +10,14 @@ import os
 import tempfile
 from importlib.resources import files
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from . import __version__
 from .config import ResolvedConfig
 from .errors import AudioTranscriberError, ConfigError, ValidationError
+from .genai import connection, selected_connection_name
 from .io_utils import atomic_write_json, atomic_write_text, sha256_file
 from .phrase_files import validate_phrase
-
-if TYPE_CHECKING:
-    from tkn_genai_bridge import Profile
 
 MAX_INPUT_BYTES = 4_000_000
 MAX_PROMPT_CHARACTERS = 120_000
@@ -39,7 +37,8 @@ def _read_input(path: Path) -> tuple[str, str]:
 def _read_segments(text: str) -> list[dict[str, Any]]:
     segments: list[dict[str, Any]] = []
     indices: set[int] = set()
-    for line_number, line in enumerate(text.splitlines(), 1):
+    # Only "\n" ends a record: text such as U+2028 stays inside the JSON string.
+    for line_number, line in enumerate(text.split("\n"), 1):
         if not line.strip():
             continue
         try:
@@ -71,44 +70,10 @@ def _read_segments(text: str) -> list[dict[str, Any]]:
     return segments
 
 
-def _generation_selection(config: ResolvedConfig, selector: str | None) -> tuple[str, str, int]:
-    generation = config.generation
-    name = selector or generation["active_profile"]
-    settings = generation["profiles"].get(name)
-    if not isinstance(settings, dict) or not settings.get("genai_profile"):
-        raise ConfigError(f"Unknown or incomplete generation profile: {name}")
-    return name, str(settings["genai_profile"]), int(generation["max_candidates"])
-
-
-def _genai_connection(config: ResolvedConfig, generation_profile: str, name: str) -> Profile:
-    """Validate the connection from this CLI's config; Bridge's own config is never read."""
-    # Import lazily so ordinary transcription does not initialize the generation stack.
-    from tkn_genai_bridge import Profile
-
-    settings = config.genai_profiles.get(name)
-    if not isinstance(settings, dict):
-        available = ", ".join(sorted(config.genai_profiles)) or "(none)"
-        raise ConfigError(
-            f"Generation profile {generation_profile!r} uses genai_profile {name!r}, which is "
-            f"not defined in genai_profiles; defined: {available}"
-        )
-    try:
-        return Profile.model_validate(settings)
-    except ValueError as exc:
-        # Report field locations and error types only. Messages from custom validators
-        # can quote the values, which may hold private settings.
-        errors = getattr(exc, "errors", None)
-        details = (
-            "; ".join(
-                f"{'.'.join(str(part) for part in error['loc']) or name} ({error['type']})"
-                for error in errors(include_input=False, include_url=False)
-            )
-            if callable(errors)
-            else "invalid settings"
-        )
-        raise ConfigError(
-            f"Invalid genai_profiles.{name}: {details}; see the tkn-genai-bridge Profile settings"
-        ) from None
+def _generation_selection(config: ResolvedConfig, genai_profile: str | None) -> tuple[str, int]:
+    return selected_connection_name(config, genai_profile), int(
+        config.generation["max_candidates"]
+    )
 
 
 def _schema(max_candidates: int) -> dict[str, Any]:
@@ -237,20 +202,20 @@ def _review(candidates: list[dict[str, Any]]) -> str:
 
 
 def preflight_phrase_generation(
-    config: ResolvedConfig, *, generation_profile: str | None = None,
+    config: ResolvedConfig, *, genai_profile: str | None = None,
     context_file: Path | None = None, max_candidates: int | None = None,
 ) -> dict[str, Any]:
     """Validate known inputs offline before paying for a new transcription."""
-    name, genai_profile, default_maximum = _generation_selection(config, generation_profile)
+    name, default_maximum = _generation_selection(config, genai_profile)
     maximum = default_maximum if max_candidates is None else max_candidates
     if type(maximum) is not int or not 1 <= maximum <= 500:
         raise ConfigError("max_candidates must be an integer between 1 and 500")
     context, context_hash = _read_input(context_file.expanduser()) if context_file else ("", None)
     if len(context) > MAX_PROMPT_CHARACTERS:
         raise ValidationError("Suggestion context exceeds 120000 characters")
-    profile = _genai_connection(config, name, genai_profile)
+    profile = connection(config, name)
     return {
-        "generation_profile": name, "genai_profile": genai_profile,
+        "genai_profile": name,
         "provider": profile.provider, "model": profile.model, "local_only": profile.local_only,
         "max_candidates": maximum, "context_sha256": context_hash,
         "transcript_validation": "after_transcription",
@@ -266,7 +231,7 @@ def suggest_phrases(
     *,
     output_dir: Path,
     config: ResolvedConfig,
-    generation_profile: str | None = None,
+    genai_profile: str | None = None,
     context_file: Path | None = None,
     max_candidates: int | None = None,
     dry_run: bool = False,
@@ -278,11 +243,11 @@ def suggest_phrases(
     source_text, source_hash = _read_input(transcript.expanduser())
     segments = _read_segments(source_text)
     context, context_hash = _read_input(context_file.expanduser()) if context_file else ("", None)
-    name, genai_profile, default_maximum = _generation_selection(config, generation_profile)
+    name, default_maximum = _generation_selection(config, genai_profile)
     maximum = default_maximum if max_candidates is None else max_candidates
     if type(maximum) is not int or not 1 <= maximum <= 500:
         raise ConfigError("max_candidates must be an integer between 1 and 500")
-    connection = _genai_connection(config, name, genai_profile)
+    profile = connection(config, name)
     instructions = (
         files("audio_transcriber")
         .joinpath("resources/phrase-suggestions.txt")
@@ -308,8 +273,7 @@ def suggest_phrases(
     output_names = ("phrases.txt", "review.md", "candidates.json", "manifest.json")
     payload: dict[str, Any] = {
         "status": "planned" if dry_run else "review_required",
-        "generation_profile": name,
-        "genai_profile": genai_profile,
+        "genai_profile": name,
         "source_sha256": source_hash,
         "context_sha256": context_hash,
         "segment_count": len(segments),
@@ -317,7 +281,7 @@ def suggest_phrases(
         "outputs": {item: str(target / item) for item in output_names},
     }
     try:
-        with Runtime(connection, profile_name=genai_profile) as runtime:
+        with Runtime(profile, profile_name=name) as runtime:
             if dry_run:
                 payload["plan"] = runtime.plan(request).model_dump(mode="json")
                 payload["network_calls"] = 0
@@ -327,7 +291,7 @@ def suggest_phrases(
         # Provider error messages can contain private response text; keep diagnostics bounded.
         code = getattr(exc, "code", "generation_failed")
         raise AudioTranscriberError(
-            f"Phrase generation failed ({code}); check genai_profiles.{genai_profile}"
+            f"Phrase generation failed ({code}); check genai_profiles.{name}"
         ) from None
     candidates = _validate_candidates(generated.data, segments, maximum)
     phrases = "# 未確認の用語候補です。修正・削除してから --phrase-file に指定してください。\n"
@@ -343,14 +307,13 @@ def suggest_phrases(
         atomic_write_json(
             stage / "manifest.json",
             {
-                # 2.0.0 renamed bridge_profile to genai_profile.
+                # 2.0.0 replaced generation_profile and bridge_profile with genai_profile.
                 "schema_version": "2.0.0",
                 "app_version": __version__,
                 "status": "review_required",
                 "source_sha256": source_hash,
                 "context_sha256": context_hash,
-                "generation_profile": name,
-                "genai_profile": genai_profile,
+                "genai_profile": name,
                 "candidate_count": len(candidates),
                 "generation": generated.record.model_dump(mode="json"),
                 "outputs": {
