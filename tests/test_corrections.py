@@ -412,7 +412,7 @@ def test_pull_corrects_new_transcripts_of_sources_with_correction(
 ) -> None:
     _recording(tmp_path)
     (tmp_path / "glossary.txt").write_text("Contoso\n", encoding="utf-8")
-    config_file = _config_file(tmp_path, CORRECTION, schema="4.0.0")
+    config_file = _config_file(tmp_path, CORRECTION, schema="5.0.0")
     bridge["responses"].append({"changes": [CONTOSO]})
 
     payload = _pull(tmp_path, config_file, pipeline_factory=_pipeline_factory)
@@ -440,7 +440,7 @@ def test_pull_reports_a_failed_correction_and_keeps_the_transcript(
 
     monkeypatch.setattr(Runtime, "generate", fail)
     payload = _pull(
-        tmp_path, _config_file(tmp_path, CORRECTION, schema="4.0.0"),
+        tmp_path, _config_file(tmp_path, CORRECTION, schema="5.0.0"),
         pipeline_factory=_pipeline_factory,
     )
 
@@ -455,7 +455,7 @@ def test_pull_checks_the_connection_before_copying_any_file(
 ) -> None:
     source = _recording(tmp_path)
     config_file = _config_file(
-        tmp_path, CORRECTION.replace("glossary.txt", "missing.txt"), schema="4.0.0"
+        tmp_path, CORRECTION.replace("glossary.txt", "missing.txt"), schema="5.0.0"
     )
     with pytest.raises(ValidationError, match="Cannot read context file"):
         _pull(tmp_path, config_file, pipeline_factory=_pipeline_factory)
@@ -467,7 +467,7 @@ def test_source_correction_settings_resolve_from_the_config_file(tmp_path: Path)
     folder.mkdir()
     path = folder / "config.yaml"
     path.write_text(
-        'schema_version: "4.0.0"\nsources:\n'
+        'schema_version: "5.0.0"\nsources:\n'
         "  a:\n    input_dir: in\n    output_dir: out\n"
         "    correction:\n      context_files: [./vocabulary/a.txt]\n"
         "  b:\n    input_dir: in\n    output_dir: out\n    correction: {}\n"
@@ -485,7 +485,7 @@ def test_source_correction_settings_resolve_from_the_config_file(tmp_path: Path)
     assert sources["b"].correction is not None and sources["b"].correction.context_files == ()
     assert sources["c"].correction is None
     path.write_text(
-        'schema_version: "4.0.0"\nsources:\n'
+        'schema_version: "5.0.0"\nsources:\n'
         "  a:\n    input_dir: in\n    output_dir: out\n    correction:\n      context_files: x\n",
         encoding="utf-8",
     )
@@ -562,7 +562,7 @@ def test_a_missing_provider_cli_is_found_before_transcription(
     user = tmp_path / "home" / ".tkn" / "audio_transcriber" / "config.yaml"
     user.parent.mkdir(parents=True)
     user.write_text(
-        'schema_version: "4.0.0"\ngenai_profiles:\n  codex-default:\n'
+        'schema_version: "5.0.0"\ngenai_profiles:\n  codex-default:\n'
         f"    cli:\n      executable: '{tmp_path / 'missing' / 'codex.exe'}'\n",
         encoding="utf-8",
     )

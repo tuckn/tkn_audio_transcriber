@@ -16,21 +16,12 @@ import yaml
 from .errors import ConfigError
 from .io_utils import atomic_write_text
 from .phrase_files import read_phrase_files, validate_phrase
-from .yaml_format import StringDateLoader, dump_yaml
+from .yaml_format import StringDateLoader
 
 APPLICATION_ID = "audio_transcriber"
-SCHEMA_VERSION = "4.0.0"
-_SCHEMA_VERSION_PARTS = (4, 0, 0)
-# Schema 4 renamed generation.profiles.<name>.bridge_profile. Schema 3 files that do
-# not use that key mean the same in schema 4, so they are read without changes.
-_LAST_SCHEMA_3_MINOR = 3
-# `sources` was added in schema 3.2.0; an older declared version cannot use it.
-SOURCES_SCHEMA_VERSION = "3.2.0"
-# `archive.name: created-time-original` was added in schema 3.3.0.
+SCHEMA_VERSION = "5.0.0"
+_SCHEMA_VERSION_PARTS = (5, 0, 0)
 ARCHIVE_NAME_CREATED_TIME_ORIGINAL = "created-time-original"
-ARCHIVE_NAME_CREATED_TIME_ORIGINAL_SCHEMA_VERSION = "3.3.0"
-# `genai_profiles` and `genai_profile` were added in schema 4.0.0.
-GENAI_PROFILES_SCHEMA_VERSION = "4.0.0"
 _SCHEMA_VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 CONFIG_EXAMPLE_RESOURCE = "resources/config.example.yaml"
 
@@ -40,6 +31,8 @@ PROVIDERS = {LOCAL_PROVIDER, AZURE_PROVIDER}
 LOCAL_MODE = "local"
 CLOUD_MODE = "cloud"
 MODES = {LOCAL_MODE, CLOUD_MODE}
+# Where a provider runs. A cloud provider receives audio derived from the media.
+MODE_PROVIDERS = {LOCAL_MODE: LOCAL_PROVIDER, CLOUD_MODE: AZURE_PROVIDER}
 
 # Common CLI and folder settings retain a normalized representation. Provider-specific
 # execution settings are also materialized as the typed transcription configurations below.
@@ -154,35 +147,37 @@ BUILT_IN_GENAI_PROFILES: dict[str, dict[str, Any]] = {
     "antigravity-default": {"provider": "antigravity", "model": None},
 }
 
+TRANSCRIPTION_PROFILES_KEY = "transcription_profiles"
+SOURCES_KEY = "sources"
+
 BUILT_IN_CONFIG: dict[str, Any] = {
-    "transcription": {
-        "active": {"mode": LOCAL_MODE, "profile": "local-small"},
-        "local": {
-            "provider": LOCAL_PROVIDER,
-            "profiles": {
-                "local-small": deepcopy(LOCAL_PROFILE_DEFAULTS),
-                "local-large": {
-                    **deepcopy(LOCAL_PROFILE_DEFAULTS),
-                    "model": "large-v3",
-                },
-                "gpu-quality": {
-                    **deepcopy(LOCAL_PROFILE_DEFAULTS),
-                    "model": "large-v3",
-                    "beam_size": 5,
-                    "compute_type": "float16",
-                    "device": "cuda",
-                },
-                "gpu-fast": {
-                    **deepcopy(LOCAL_PROFILE_DEFAULTS),
-                    "model": "large-v3",
-                    "compute_type": "int8_float16",
-                    "device": "cuda",
-                },
+    "transcription": {"profile": f"{LOCAL_MODE}/local-small"},
+    TRANSCRIPTION_PROFILES_KEY: {
+        LOCAL_MODE: {
+            "local-small": {"provider": LOCAL_PROVIDER, **deepcopy(LOCAL_PROFILE_DEFAULTS)},
+            "local-large": {
+                "provider": LOCAL_PROVIDER,
+                **deepcopy(LOCAL_PROFILE_DEFAULTS),
+                "model": "large-v3",
+            },
+            "gpu-quality": {
+                "provider": LOCAL_PROVIDER,
+                **deepcopy(LOCAL_PROFILE_DEFAULTS),
+                "model": "large-v3",
+                "beam_size": 5,
+                "compute_type": "float16",
+                "device": "cuda",
+            },
+            "gpu-fast": {
+                "provider": LOCAL_PROVIDER,
+                **deepcopy(LOCAL_PROFILE_DEFAULTS),
+                "model": "large-v3",
+                "compute_type": "int8_float16",
+                "device": "cuda",
             },
         },
-        "cloud": {
-            "provider": AZURE_PROVIDER,
-            "profiles": {"azure-ja": deepcopy(AZURE_PROFILE_DEFAULTS)},
+        CLOUD_MODE: {
+            "azure-ja": {"provider": AZURE_PROVIDER, **deepcopy(AZURE_PROFILE_DEFAULTS)},
         },
     },
     "folders": {
@@ -203,9 +198,10 @@ BUILT_IN_CONFIG: dict[str, Any] = {
     },
 }
 
-TOP_LEVEL_KEYS = {"transcription", "folders", "processing", "generation"}
-SOURCES_KEY = "sources"
-V3_TOP_LEVEL_KEYS = {*TOP_LEVEL_KEYS, SOURCES_KEY, GENAI_PROFILES_KEY}
+TOP_LEVEL_KEYS = {
+    "transcription", TRANSCRIPTION_PROFILES_KEY, "folders", "processing", "generation",
+    SOURCES_KEY, GENAI_PROFILES_KEY,
+}
 SOURCE_KEYS = {
     "input_dir", "include", "min_age_seconds", "profile", "output_dir", "archive", "correction",
 }
@@ -219,25 +215,11 @@ DEFAULT_SOURCE_MIN_AGE_SECONDS = 30
 SOURCE_PATH_PLACEHOLDERS = {"year"}
 _SOURCE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _PLACEHOLDER_PATTERN = re.compile(r"\{([^{}]*)\}")
-TRANSCRIPTION_KEYS = {"active", LOCAL_MODE, CLOUD_MODE}
-ACTIVE_KEYS = {"mode", "profile"}
-BACKEND_KEYS = {"provider", "profiles"}
-LOCAL_PROFILE_KEYS = set(LOCAL_PROFILE_DEFAULTS)
-AZURE_PROFILE_KEYS = {
-    "profanity_filter_mode",
-    "phrase_list",
-    "authentication",
-    "endpoint",
-    "region",
-    "api_version",
-    "locale",
-    "diarization",
-    "request",
+TRANSCRIPTION_KEYS = {"profile"}
+PROFILE_KEYS = {
+    LOCAL_MODE: {"provider", *LOCAL_PROFILE_DEFAULTS},
+    CLOUD_MODE: {"provider", *AZURE_PROFILE_DEFAULTS},
 }
-V2_TRANSCRIPTION_KEYS = {"active_profile", "profiles"}
-V2_LOCAL_PROFILE_KEYS = {"provider", *LOCAL_PROFILE_KEYS}
-V2_AZURE_PROFILE_KEYS = {"provider", *AZURE_PROFILE_KEYS}
-V2_ALL_PROFILE_KEYS = V2_LOCAL_PROFILE_KEYS | V2_AZURE_PROFILE_KEYS
 FOLDER_KEYS = {"output", "local_models", "huggingface_cache", "state"}
 PROCESSING_KEYS = {"ffmpeg", "heartbeat_seconds", "keep_working_files"}
 FFMPEG_KEYS = {"executable", "timeout_seconds"}
@@ -279,30 +261,6 @@ AZURE_PROFILE_TO_FLAT = {
     ("request", "max_retries"): "azure_speech_max_retries",
 }
 
-LEGACY_LOCAL_TO_PROFILE = {
-    "model": ("model",),
-    "language": ("language",),
-    "chunk_seconds": ("chunk_seconds",),
-    "beam_size": ("beam_size",),
-    "compute_type": ("compute_type",),
-    "device": ("device",),
-}
-LEGACY_AZURE_TO_PROFILE = {
-    "azure_speech_profanity_filter_mode": ("profanity_filter_mode",),
-    "azure_speech_phrases": ("phrase_list", "phrases"),
-    "azure_speech_phrase_files": ("phrase_list", "files"),
-    "azure_speech_reuse_cached_credentials": ("authentication", "reuse_cached_credentials"),
-    "azure_speech_endpoint": ("endpoint",),
-    "azure_speech_region": ("region",),
-    "azure_speech_api_version": ("api_version",),
-    "azure_speech_locale": ("locale",),
-    "azure_speech_diarization_enabled": ("diarization", "enabled"),
-    "azure_speech_max_speakers": ("diarization", "max_speakers"),
-    "azure_speech_timeout_seconds": ("request", "timeout_seconds"),
-    "azure_speech_max_retries": ("request", "max_retries"),
-}
-LEGACY_FOLDER_TO_V3 = {value: key for key, value in FOLDER_TO_FLAT.items()}
-LEGACY_PROCESSING_TO_V3 = {value: key for key, value in PROCESSING_TO_FLAT.items()}
 
 
 @dataclass(frozen=True)
@@ -494,17 +452,6 @@ def _inspect_schema_version(value: dict[str, Any], path: Path) -> dict[str, Any]
         )
 
     raw_version = value["schema_version"]
-    if type(raw_version) is int and raw_version == 1:
-        return {
-            "schema_version": raw_version,
-            "effective_schema_version": SCHEMA_VERSION,
-            "migration": {
-                "kind": "legacy_flat_to_execution_modes",
-                "from_version": raw_version,
-                "to_version": SCHEMA_VERSION,
-                "persistent_config_updated": False,
-            },
-        }
     if not isinstance(raw_version, str) or not _SCHEMA_VERSION_PATTERN.fullmatch(raw_version):
         raise ConfigError(
             f"Invalid schema_version {raw_version!r} in {path}; expected a quoted "
@@ -513,56 +460,13 @@ def _inspect_schema_version(value: dict[str, Any], path: Path) -> dict[str, Any]
 
     major, minor, _patch = (int(part) for part in raw_version.split("."))
     current_major, current_minor, _current_patch = _SCHEMA_VERSION_PARTS
-    if major == 1:
-        if minor > 1:
-            raise ConfigError(
-                f"Unsupported legacy schema_version {raw_version!r} in {path}; "
-                "upgrade the application that created it or convert it manually"
-            )
-        return {
-            "schema_version": raw_version,
-            "effective_schema_version": SCHEMA_VERSION,
-            "migration": {
-                "kind": "legacy_flat_to_execution_modes",
-                "from_version": raw_version,
-                "to_version": SCHEMA_VERSION,
-                "persistent_config_updated": False,
-            },
-        }
-    if major == 2:
-        if minor > 0:
-            raise ConfigError(
-                f"Unsupported legacy schema_version {raw_version!r} in {path}; "
-                "upgrade the application that created it or convert it manually"
-            )
-        return {
-            "schema_version": raw_version,
-            "effective_schema_version": SCHEMA_VERSION,
-            "migration": {
-                "kind": "profiles_to_execution_modes",
-                "from_version": raw_version,
-                "to_version": SCHEMA_VERSION,
-                "persistent_config_updated": False,
-            },
-        }
-    if major == 3:
-        if minor > _LAST_SCHEMA_3_MINOR:
-            raise ConfigError(
-                f"Unsupported legacy schema_version {raw_version!r} in {path}; "
-                "upgrade the application that created it or convert it manually"
-            )
-        # Read unchanged; the only key schema 4 renamed is rejected during validation.
-        return {
-            "schema_version": raw_version,
-            "effective_schema_version": SCHEMA_VERSION,
-            "migration": None,
-        }
     if major != current_major:
         direction = "newer" if major > current_major else "older"
         action = (
             "upgrade tkn-audio-transcriber"
             if major > current_major
-            else "migrate the configuration explicitly; no migration path is available"
+            else "no migration path is available; rewrite the file in the layout that "
+            "`tkn-audio-transcriber config init PATH` writes"
         )
         raise ConfigError(
             f"Unsupported {direction} schema_version {raw_version!r} in {path}; "
@@ -580,18 +484,6 @@ def _inspect_schema_version(value: dict[str, Any], path: Path) -> dict[str, Any]
         "effective_schema_version": SCHEMA_VERSION,
         "migration": None,
     }
-
-
-def _schema_major(raw_version: object) -> int:
-    if raw_version == 1:
-        return 1
-    assert isinstance(raw_version, str)
-    return int(raw_version.split(".", maxsplit=1)[0])
-
-
-def _version_parts(raw_version: str) -> tuple[int, int, int]:
-    major, minor, patch = (int(part) for part in raw_version.split("."))
-    return major, minor, patch
 
 
 def _mapping(value: Any, label: str, path: Path) -> dict[str, Any]:
@@ -656,13 +548,6 @@ def _validate_profile_values(profile: dict[str, Any], label: str, path: Path) ->
                 f"{label}.authentication.reuse_cached_credentials",
                 path,
             )
-    if "provider" in profile:
-        _require_type(profile["provider"], str, f"{label}.provider", path)
-        if profile["provider"] not in PROVIDERS:
-            raise ConfigError(
-                f"{label}.provider must be either {LOCAL_PROVIDER!r} or "
-                f"{AZURE_PROVIDER!r} in {path}"
-            )
     for key in (
         "model",
         "language",
@@ -708,64 +593,39 @@ def _validate_profile_values(profile: dict[str, Any], label: str, path: Path) ->
             )
 
 
-def _validate_named_profiles(
-    value: Any,
-    *,
-    label: str,
-    path: Path,
-    allowed_keys: set[str],
+def _validate_profile_selector(value: Any, label: str, path: Path) -> None:
+    _require_type(value, str, label, path)
+    mode, separator, name = value.partition("/")
+    if not separator or mode not in MODES or not name.strip():
+        raise ConfigError(f"{label} must be local/NAME or cloud/NAME in {path}")
+
+
+def _validate_profile_provider(
+    profile: dict[str, Any], mode: str, label: str, path: Path, *, required: bool
 ) -> None:
+    """A profile names its provider, and the provider must run where its group says."""
+    expected = MODE_PROVIDERS[mode]
+    if "provider" not in profile:
+        if required:
+            raise ConfigError(f"{label}.provider is required; set it to {expected!r}")
+        return
+    if profile["provider"] != expected:
+        raise ConfigError(f"{label}.provider must be {expected!r} for a {mode} profile in {path}")
+
+
+def _validate_named_profiles(value: Any, *, mode: str, path: Path) -> None:
+    label = f"{TRANSCRIPTION_PROFILES_KEY}.{mode}"
     profiles = _mapping(value, label, path)
     for raw_name, raw_profile in profiles.items():
         if not isinstance(raw_name, str) or not raw_name.strip():
             raise ConfigError(f"transcription profile names must be non-empty strings in {path}")
         profile_label = f"{label}.{raw_name}"
         profile = _mapping(raw_profile, profile_label, path)
-        _reject_unknown(profile, allowed_keys, profile_label, path)
+        _reject_unknown(profile, PROFILE_KEYS[mode], profile_label, path)
+        # A later layer may change single fields of an inherited profile without
+        # repeating its provider; a complete profile is required when it is resolved.
+        _validate_profile_provider(profile, mode, profile_label, path, required=False)
         _validate_profile_values(profile, profile_label, path)
-
-
-def _validate_v2_layer(value: dict[str, Any], path: Path) -> None:
-    _reject_unknown(value, TOP_LEVEL_KEYS, "root", path)
-    if "transcription" in value:
-        transcription = _mapping(value["transcription"], "transcription", path)
-        _reject_unknown(transcription, V2_TRANSCRIPTION_KEYS, "transcription", path)
-        if "active_profile" in transcription:
-            _require_type(
-                transcription["active_profile"],
-                str,
-                "transcription.active_profile",
-                path,
-            )
-            if not transcription["active_profile"].strip():
-                raise ConfigError(f"transcription.active_profile must not be empty in {path}")
-        if "profiles" in transcription:
-            _validate_named_profiles(
-                transcription["profiles"],
-                label="transcription.profiles",
-                path=path,
-                allowed_keys=V2_ALL_PROFILE_KEYS,
-            )
-    _validate_shared_layer(value, path, schema_major=2)
-
-
-def _validate_backend_layer(value: Any, *, mode: str, path: Path) -> None:
-    label = f"transcription.{mode}"
-    backend = _mapping(value, label, path)
-    _reject_unknown(backend, BACKEND_KEYS, label, path)
-    expected_provider = LOCAL_PROVIDER if mode == LOCAL_MODE else AZURE_PROVIDER
-    if "provider" in backend:
-        _require_type(backend["provider"], str, f"{label}.provider", path)
-        if backend["provider"] != expected_provider:
-            raise ConfigError(f"{label}.provider must be {expected_provider!r} in {path}")
-    if "profiles" in backend:
-        allowed = LOCAL_PROFILE_KEYS if mode == LOCAL_MODE else AZURE_PROFILE_KEYS
-        _validate_named_profiles(
-            backend["profiles"],
-            label=f"{label}.profiles",
-            path=path,
-            allowed_keys=allowed,
-        )
 
 
 def _validate_path_template(value: Any, label: str, path: Path, *, placeholders: bool) -> None:
@@ -850,42 +710,21 @@ def _validate_sources(value: Any, path: Path) -> None:
                 )
 
 
-def _sources_with_archive_name(sources: object, archive_name: str) -> list[str]:
-    """Names of already validated sources whose archive uses `archive_name`."""
-    if not isinstance(sources, dict):
-        return []
-    return [
-        name
-        for name, source in sources.items()
-        if isinstance(source, dict)
-        and isinstance(source.get("archive"), dict)
-        and source["archive"].get("name") == archive_name
-    ]
-
-
-def _validate_v3_layer(value: dict[str, Any], path: Path) -> None:
-    _reject_unknown(value, V3_TOP_LEVEL_KEYS, "root", path)
+def _validate_layer(value: dict[str, Any], path: Path) -> None:
+    _reject_unknown(value, TOP_LEVEL_KEYS, "root", path)
     if SOURCES_KEY in value:
         _validate_sources(value[SOURCES_KEY], path)
     if "transcription" in value:
         transcription = _mapping(value["transcription"], "transcription", path)
         _reject_unknown(transcription, TRANSCRIPTION_KEYS, "transcription", path)
-        if "active" in transcription:
-            active = _mapping(transcription["active"], "transcription.active", path)
-            _reject_unknown(active, ACTIVE_KEYS, "transcription.active", path)
-            if "mode" in active:
-                _require_type(active["mode"], str, "transcription.active.mode", path)
-                if active["mode"] not in MODES:
-                    raise ConfigError(
-                        f"transcription.active.mode must be 'local' or 'cloud' in {path}"
-                    )
-            if "profile" in active:
-                _require_type(active["profile"], str, "transcription.active.profile", path)
-                if not active["profile"].strip():
-                    raise ConfigError(f"transcription.active.profile must not be empty in {path}")
+        if "profile" in transcription:
+            _validate_profile_selector(transcription["profile"], "transcription.profile", path)
+    if TRANSCRIPTION_PROFILES_KEY in value:
+        groups = _mapping(value[TRANSCRIPTION_PROFILES_KEY], TRANSCRIPTION_PROFILES_KEY, path)
+        _reject_unknown(groups, MODES, TRANSCRIPTION_PROFILES_KEY, path)
         for mode in (LOCAL_MODE, CLOUD_MODE):
-            if mode in transcription:
-                _validate_backend_layer(transcription[mode], mode=mode, path=path)
+            if mode in groups:
+                _validate_named_profiles(groups[mode], mode=mode, path=path)
     if GENAI_PROFILES_KEY in value:
         _validate_genai_profiles(value[GENAI_PROFILES_KEY], path)
     _validate_shared_layer(value, path)
@@ -947,41 +786,9 @@ def _validate_genai_profiles(value: Any, path: Path) -> None:
                     )
 
 
-def _removed_generation_profiles_error(generation: dict[str, Any], *, schema_major: int) -> str:
-    """Guidance for `generation.active_profile` and `generation.profiles`, removed in 4.0.0."""
-    built_in = ", ".join(BUILT_IN_GENAI_PROFILES)
-    profiles = generation.get("profiles")
-    uses_bridge = isinstance(profiles, dict) and any(
-        isinstance(settings, dict) and "bridge_profile" in settings
-        for settings in profiles.values()
-    )
-    bridge = (
-        " The shared tkn-genai-bridge config (bridge_profile) is no longer read: copy the "
-        f"connection from it into {GENAI_PROFILES_KEY}, unless it is a built-in name whose "
-        "settings you never changed there."
-        if uses_bridge
-        else ""
-    )
-    finish = (
-        # Schema 2 files keep their old transcription layout until `config migrate`.
-        "in this file, then run `tkn-audio-transcriber config migrate` on it"
-        if schema_major == 2
-        else f'and set schema_version: "{SCHEMA_VERSION}"'
-    )
-    return (
-        f"generation.active_profile and generation.profiles were removed in schema "
-        f"{SCHEMA_VERSION}. Name the connection directly with generation.genai_profile "
-        f"(a name in {GENAI_PROFILES_KEY}; built in: {built_in}) {finish}.{bridge}"
-    )
-
-
-def _validate_shared_layer(value: dict[str, Any], path: Path, *, schema_major: int = 3) -> None:
+def _validate_shared_layer(value: dict[str, Any], path: Path) -> None:
     if "generation" in value:
         generation = _mapping(value["generation"], "generation", path)
-        if "active_profile" in generation or "profiles" in generation:
-            raise ConfigError(
-                _removed_generation_profiles_error(generation, schema_major=schema_major)
-            )
         _reject_unknown(generation, {"genai_profile", "max_candidates"}, "generation", path)
         if "genai_profile" in generation:
             genai_profile = generation["genai_profile"]
@@ -1122,75 +929,16 @@ def _validate_flat_values(
             )
 
 
-def _load_yaml(path: Path) -> tuple[dict[str, Any], dict[str, Any], int]:
+def _load_yaml(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     _text, loaded = _read_yaml(path)
     schema_report = _inspect_schema_version(loaded, path)
     result = dict(loaded)
-    raw_version = result.pop("schema_version")
-    schema_major = _schema_major(raw_version)
-    if schema_major == 1:
-        unknown = sorted(set(result) - set(DEFAULTS))
-        if unknown:
-            raise ConfigError(f"Unknown config key(s) in {path}: {', '.join(unknown)}")
-        candidate = dict(DEFAULTS)
-        candidate.update(result)
-        try:
-            _validate_flat_values(candidate)
-        except ConfigError as exc:
-            raise ConfigError(f"Invalid config file {path}: {exc}") from exc
-    elif schema_major == 2:
-        # A schema 2 file may already use generation.genai_profile: setting it there is the
-        # step before `config migrate`, which keeps the generation values as written.
-        try:
-            _validate_v2_layer(result, path)
-        except ConfigError as exc:
-            raise ConfigError(f"Invalid config file {path}: {exc}") from exc
-    else:
-        assert isinstance(raw_version, str)
-        declared = _version_parts(raw_version)
-        if SOURCES_KEY in result and declared < _version_parts(SOURCES_SCHEMA_VERSION):
-            raise ConfigError(
-                f"Invalid config file {path}: sources requires schema_version "
-                f'"{SOURCES_SCHEMA_VERSION}" or later; update schema_version first'
-            )
-        try:
-            _validate_v3_layer(result, path)
-        except ConfigError as exc:
-            raise ConfigError(f"Invalid config file {path}: {exc}") from exc
-        if declared < _version_parts(ARCHIVE_NAME_CREATED_TIME_ORIGINAL_SCHEMA_VERSION):
-            names = _sources_with_archive_name(
-                result.get(SOURCES_KEY), ARCHIVE_NAME_CREATED_TIME_ORIGINAL
-            )
-            if names:
-                raise ConfigError(
-                    f"Invalid config file {path}: sources.{names[0]}.archive.name "
-                    f"{ARCHIVE_NAME_CREATED_TIME_ORIGINAL} requires schema_version "
-                    f'"{ARCHIVE_NAME_CREATED_TIME_ORIGINAL_SCHEMA_VERSION}" or later; '
-                    "update schema_version first"
-                )
-        if declared < _version_parts(GENAI_PROFILES_SCHEMA_VERSION):
-            new_key = _first_schema_4_key(result)
-            if new_key is not None:
-                raise ConfigError(
-                    f"Invalid config file {path}: {new_key} requires schema_version "
-                    f'"{GENAI_PROFILES_SCHEMA_VERSION}" or later; update schema_version first'
-                )
-    return result, schema_report, schema_major
-
-
-def _first_schema_4_key(layer: dict[str, Any]) -> str | None:
-    """Location of the first key added in schema 4.0.0, in an already validated layer."""
-    if GENAI_PROFILES_KEY in layer:
-        return GENAI_PROFILES_KEY
-    generation = layer.get("generation")
-    if isinstance(generation, dict) and "genai_profile" in generation:
-        return "generation.genai_profile"
-    sources = layer.get(SOURCES_KEY)
-    if isinstance(sources, dict):
-        for name, source in sources.items():
-            if isinstance(source, dict) and "correction" in source:
-                return f"{SOURCES_KEY}.{name}.correction"
-    return None
+    result.pop("schema_version")
+    try:
+        _validate_layer(result, path)
+    except ConfigError as exc:
+        raise ConfigError(f"Invalid config file {path}: {exc}") from exc
+    return result, schema_report
 
 
 def _resolve_genai_executables(layer: dict[str, Any], base: Path) -> None:
@@ -1254,161 +1002,38 @@ def _merge_config(
             sources[key_path] = label
 
 
-def _set_nested(target: dict[str, Any], keys: tuple[str, ...], value: Any) -> None:
-    cursor = target
-    for key in keys[:-1]:
-        child = cursor.setdefault(key, {})
-        assert isinstance(child, dict)
-        cursor = child
-    cursor[keys[-1]] = value
-
-
-def _mode_for_provider(provider: str) -> str:
-    if provider == LOCAL_PROVIDER:
-        return LOCAL_MODE
-    if provider == AZURE_PROVIDER:
-        return CLOUD_MODE
-    raise ConfigError(f"Unsupported transcription provider {provider!r}")
-
-
 def _profile_modes(config: dict[str, Any], profile_name: str) -> list[str]:
-    transcription = _mapping(config.get("transcription"), "transcription", Path("<merged>"))
-    matches: list[str] = []
-    for mode in (LOCAL_MODE, CLOUD_MODE):
-        backend = transcription.get(mode)
-        if not isinstance(backend, dict):
-            continue
-        profiles = backend.get("profiles")
-        if isinstance(profiles, dict) and profile_name in profiles:
-            matches.append(mode)
-    return matches
-
-
-def _apply_v2_layer(
-    config: dict[str, Any],
-    v2: dict[str, Any],
-    sources: dict[tuple[str, ...], str],
-    label: str,
-) -> None:
-    layer: dict[str, Any] = {}
-    profile_mode_hints: dict[str, str] = {}
-    transcription = v2.get("transcription")
-    if isinstance(transcription, dict):
-        profiles = transcription.get("profiles")
-        if isinstance(profiles, dict):
-            for raw_name, raw_profile in profiles.items():
-                name = str(raw_name)
-                profile = _mapping(raw_profile, f"transcription.profiles.{name}", Path(label))
-                converted = dict(profile)
-                provider = converted.pop("provider", None)
-                if provider is None:
-                    matches = _profile_modes(config, name)
-                    if len(matches) != 1:
-                        raise ConfigError(
-                            f"Cannot infer local/cloud mode for schema 2 profile {name!r} "
-                            f"in {label}; add provider before migrating"
-                        )
-                    mode = matches[0]
-                else:
-                    mode = _mode_for_provider(str(provider))
-                    _set_nested(
-                        layer,
-                        ("transcription", mode, "provider"),
-                        provider,
-                    )
-                profile_mode_hints[name] = mode
-                _set_nested(
-                    layer,
-                    ("transcription", mode, "profiles", name),
-                    converted,
-                )
-
-        if "active_profile" in transcription:
-            active_name = str(transcription["active_profile"])
-            active_mode = profile_mode_hints.get(active_name)
-            if active_mode is None:
-                matches = _profile_modes(config, active_name)
-                if len(matches) != 1:
-                    raise ConfigError(
-                        f"Cannot infer local/cloud mode for schema 2 active profile "
-                        f"{active_name!r} in {label}"
-                    )
-                active_mode = matches[0]
-            _set_nested(layer, ("transcription", "active", "mode"), active_mode)
-            _set_nested(layer, ("transcription", "active", "profile"), active_name)
-
-    for key in ("folders", "processing", "generation"):
-        if key in v2:
-            layer[key] = deepcopy(v2[key])
-    _merge_config(config, layer, sources, label)
-
-
-def _apply_legacy_layer(
-    config: dict[str, Any],
-    legacy: dict[str, Any],
-    sources: dict[tuple[str, ...], str],
-    label: str,
-) -> None:
-    local_name = "local-small"
-    azure_name = "azure-ja"
-    layer: dict[str, Any] = {}
-
-    if "provider" in legacy:
-        selected_provider = str(legacy["provider"])
-        selected_mode = _mode_for_provider(selected_provider)
-        selected_name = local_name if selected_mode == LOCAL_MODE else azure_name
-        _set_nested(layer, ("transcription", "active", "mode"), selected_mode)
-        _set_nested(layer, ("transcription", "active", "profile"), selected_name)
-    if any(key in legacy for key in LEGACY_LOCAL_TO_PROFILE):
-        for old_key, new_path in LEGACY_LOCAL_TO_PROFILE.items():
-            if old_key in legacy:
-                _set_nested(
-                    layer,
-                    ("transcription", LOCAL_MODE, "profiles", local_name, *new_path),
-                    legacy[old_key],
-                )
-    if any(key in legacy for key in LEGACY_AZURE_TO_PROFILE):
-        for old_key, azure_path in LEGACY_AZURE_TO_PROFILE.items():
-            if old_key in legacy:
-                _set_nested(
-                    layer,
-                    ("transcription", CLOUD_MODE, "profiles", azure_name, *azure_path),
-                    legacy[old_key],
-                )
-    for old_key, new_key in LEGACY_FOLDER_TO_V3.items():
-        if old_key in legacy:
-            _set_nested(layer, ("folders", new_key), legacy[old_key])
-    for old_key, processing_path in LEGACY_PROCESSING_TO_V3.items():
-        if old_key in legacy:
-            _set_nested(layer, ("processing", *processing_path), legacy[old_key])
-    _merge_config(config, layer, sources, label)
+    groups = _mapping(
+        config.get(TRANSCRIPTION_PROFILES_KEY), TRANSCRIPTION_PROFILES_KEY, Path("<merged>")
+    )
+    return [
+        mode
+        for mode in (LOCAL_MODE, CLOUD_MODE)
+        if isinstance(groups.get(mode), dict) and profile_name in groups[mode]
+    ]
 
 
 def _effective_profile(
     config: dict[str, Any], mode: str, name: str, path: Path
 ) -> tuple[str, dict[str, Any]]:
-    transcription = _mapping(config.get("transcription"), "transcription", path)
-    backend = _mapping(transcription.get(mode), f"transcription.{mode}", path)
-    provider = backend.get("provider")
-    expected_provider = LOCAL_PROVIDER if mode == LOCAL_MODE else AZURE_PROVIDER
-    if provider != expected_provider:
-        raise ConfigError(
-            f"transcription.{mode}.provider is required and must be {expected_provider!r} in {path}"
-        )
-    profiles = _mapping(backend.get("profiles"), f"transcription.{mode}.profiles", path)
+    groups = _mapping(config.get(TRANSCRIPTION_PROFILES_KEY), TRANSCRIPTION_PROFILES_KEY, path)
+    group_label = f"{TRANSCRIPTION_PROFILES_KEY}.{mode}"
+    profiles = _mapping(groups.get(mode), group_label, path)
     if name not in profiles:
         available = ", ".join(sorted(str(item) for item in profiles)) or "(none)"
         raise ConfigError(
             f"Unknown transcription profile {mode}/{name!s}; available {mode} profiles: {available}"
         )
-    profile = _mapping(profiles[name], f"transcription.{mode}.profiles.{name}", path)
-    allowed = LOCAL_PROFILE_KEYS if mode == LOCAL_MODE else AZURE_PROFILE_KEYS
-    _reject_unknown(profile, allowed, f"transcription.{mode}.profiles.{name}", path)
+    label = f"{group_label}.{name}"
+    profile = _mapping(profiles[name], label, path)
+    _reject_unknown(profile, PROFILE_KEYS[mode], label, path)
+    _validate_profile_provider(profile, mode, label, path, required=True)
     effective = deepcopy(PROFILE_DEFAULTS[mode])
     throwaway_sources: dict[tuple[str, ...], str] = {}
-    _merge_config(effective, profile, throwaway_sources, "profile")
-    _validate_profile_values(effective, f"transcription.{mode}.profiles.{name}", path)
-    return str(provider), effective
+    settings = {key: value for key, value in profile.items() if key != "provider"}
+    _merge_config(effective, settings, throwaway_sources, "profile")
+    _validate_profile_values(effective, label, path)
+    return str(profile["provider"]), effective
 
 
 def _has_leaf(value: dict[str, Any], keys: tuple[str, ...]) -> bool:
@@ -1428,10 +1053,10 @@ def _get_nested(value: dict[str, Any], keys: tuple[str, ...]) -> Any:
 
 
 def _select_profile(config: dict[str, Any], selector: str | None, path: Path) -> tuple[str, str]:
-    transcription = _mapping(config.get("transcription"), "transcription", path)
     if selector is None:
-        active = _mapping(transcription.get("active"), "transcription.active", path)
-        return str(active.get("mode")), str(active.get("profile"))
+        # Every layer is validated, so the merged value is always MODE/NAME.
+        transcription = _mapping(config.get("transcription"), "transcription", path)
+        selector = str(transcription.get("profile"))
 
     if "/" in selector:
         mode, name = selector.split("/", maxsplit=1)
@@ -1458,17 +1083,14 @@ def _normalized_values(
     profile_name: str,
     validation_path: Path,
 ) -> tuple[dict[str, Any], dict[str, str], tuple[dict[str, Any], ...]]:
-    transcription = _mapping(config.get("transcription"), "transcription", validation_path)
+    groups = _mapping(
+        config.get(TRANSCRIPTION_PROFILES_KEY), TRANSCRIPTION_PROFILES_KEY, validation_path
+    )
     summaries: list[dict[str, Any]] = []
     for candidate_mode in (LOCAL_MODE, CLOUD_MODE):
-        backend = _mapping(
-            transcription.get(candidate_mode),
-            f"transcription.{candidate_mode}",
-            validation_path,
-        )
         profiles = _mapping(
-            backend.get("profiles"),
-            f"transcription.{candidate_mode}.profiles",
+            groups.get(candidate_mode),
+            f"{TRANSCRIPTION_PROFILES_KEY}.{candidate_mode}",
             validation_path,
         )
         for name in sorted(profiles):
@@ -1486,25 +1108,22 @@ def _normalized_values(
             )
 
     provider, profile = _effective_profile(config, mode, profile_name, validation_path)
+    profile_path = (TRANSCRIPTION_PROFILES_KEY, mode, profile_name)
     values = dict(DEFAULTS)
     value_sources = {key: "built-in default" for key in values}
     values["provider"] = provider
-    value_sources["provider"] = source_paths.get(
-        ("transcription", mode, "provider"), "built-in default"
-    )
+    value_sources["provider"] = source_paths.get((*profile_path, "provider"), "built-in default")
     if mode == LOCAL_MODE:
         for profile_key, flat_key in LOCAL_PROFILE_TO_FLAT.items():
             values[flat_key] = profile[profile_key]
             value_sources[flat_key] = source_paths.get(
-                ("transcription", mode, "profiles", profile_name, profile_key),
-                "built-in default",
+                (*profile_path, profile_key), "built-in default"
             )
     else:
-        for profile_path, flat_key in AZURE_PROFILE_TO_FLAT.items():
-            values[flat_key] = _get_nested(profile, profile_path)
+        for azure_path, flat_key in AZURE_PROFILE_TO_FLAT.items():
+            values[flat_key] = _get_nested(profile, azure_path)
             value_sources[flat_key] = source_paths.get(
-                ("transcription", mode, "profiles", profile_name, *profile_path),
-                "built-in default",
+                (*profile_path, *azure_path), "built-in default"
             )
 
     folders = _mapping(config.get("folders"), "folders", validation_path)
@@ -1655,9 +1274,8 @@ def load_input_sources(
             continue
         if not path.is_file():
             raise ConfigError(f"Config path is not a file: {path}")
-        layer, _schema_report, schema_major = _load_yaml(path)
-        if schema_major >= 3:
-            _apply_sources_layer(sources, layer.get(SOURCES_KEY), path, f"{label}: {path}")
+        layer, _schema_report = _load_yaml(path)
+        _apply_sources_layer(sources, layer.get(SOURCES_KEY), path, f"{label}: {path}")
     return tuple(sources.values())
 
 
@@ -1718,30 +1336,21 @@ def resolve_config(
             continue
         if not path.is_file():
             raise ConfigError(f"Config path is not a file: {path}")
-        layer, schema_report, schema_major = _load_yaml(path)
+        layer, schema_report = _load_yaml(path)
         source_report.update(schema_report)
         source_label = f"{label}: {path}"
         source_directories[source_label] = path.parent
-        if schema_major == 1:
-            _apply_legacy_layer(config, layer, source_paths, source_label)
-        elif schema_major == 2:
-            _apply_v2_layer(config, layer, source_paths, source_label)
-        else:
-            _apply_sources_layer(media_sources, layer.pop(SOURCES_KEY, None), path, source_label)
-            _resolve_genai_executables(layer, path.parent)
-            _merge_config(config, layer, source_paths, source_label)
+        _apply_sources_layer(media_sources, layer.pop(SOURCES_KEY, None), path, source_label)
+        _resolve_genai_executables(layer, path.parent)
+        _merge_config(config, layer, source_paths, source_label)
         loaded_files.append(path)
 
     selected_mode, selected_profile = _select_profile(config, profile, current_directory)
-    active_mode_source = (
+    # One selector names both, so the mode and the profile always come from the same place.
+    active_mode_source = active_profile_source = (
         "CLI option"
         if profile is not None
-        else source_paths.get(("transcription", "active", "mode"), "built-in default")
-    )
-    active_profile_source = (
-        "CLI option"
-        if profile is not None
-        else source_paths.get(("transcription", "active", "profile"), "built-in default")
+        else source_paths.get(("transcription", "profile"), "built-in default")
     )
     values, sources, profile_summaries = _normalized_values(
         config, source_paths, selected_mode, selected_profile, current_directory
@@ -1889,86 +1498,24 @@ def initialize_user_config(
     }
 
 
-def _config_text(config: dict[str, Any]) -> str:
-    if config == BUILT_IN_CONFIG:
-        return config_example_text()
-    body = dump_yaml(config)
-    return f'schema_version: "{SCHEMA_VERSION}"\n\n{body}'
-
-
 def migrate_config_file(path: Path, *, dry_run: bool = False) -> dict[str, Any]:
+    """Report that one config file is already written in the current schema.
+
+    No older schema has a migration path: loading rejects it with the action to take,
+    so a file that loads needs no change, and `dry_run` has nothing to hold back.
+    Only this file is checked. What it means together with the other config files,
+    such as a profile whose provider none of them sets, is checked by `config list`.
+    """
     target = path.expanduser().resolve(strict=False)
     if not target.exists():
         raise ConfigError(f"Config file not found: {target}")
     if not target.is_file():
         raise ConfigError(f"Config path is not a file: {target}")
-
-    source, schema_report, schema_major = _load_yaml(target)
-    migration = schema_report["migration"]
-    if migration is None:
-        return {
-            "status": "unchanged",
-            "config_path": str(target),
-            "schema_version": schema_report["schema_version"],
-            "effective_schema_version": SCHEMA_VERSION,
-            "backup_path": None,
-        }
-
-    migrated = deepcopy(BUILT_IN_CONFIG)
-    migrated_sources: dict[tuple[str, ...], str] = {}
-    _record_sources(migrated, migrated_sources, "built-in default")
-    source_label = f"legacy config: {target}"
-    if schema_major == 1:
-        _apply_legacy_layer(migrated, source, migrated_sources, source_label)
-    else:
-        _apply_v2_layer(migrated, source, migrated_sources, source_label)
-    # Schema 1 and 2 files never define AI connections. Writing the built-in ones, or
-    # generation values the file did not set, would override a user config it is layered on.
-    migrated.pop(GENAI_PROFILES_KEY)
-    if "generation" in source:
-        migrated["generation"] = deepcopy(source["generation"])
-    else:
-        migrated.pop("generation")
-    migrated_text = _config_text(migrated)
-
-    try:
-        parsed = yaml.safe_load(migrated_text)
-    except yaml.YAMLError as exc:
-        raise ConfigError(f"Migrated config is not valid YAML: {target}: {exc}") from exc
-    if not isinstance(parsed, dict):
-        raise ConfigError(f"Migrated config root must be a mapping: {target}")
-    parsed_version = parsed.pop("schema_version", None)
-    if parsed_version != SCHEMA_VERSION:
-        raise ConfigError(f"Config migration did not reach schema {SCHEMA_VERSION}: {target}")
-    _validate_v3_layer(parsed, target)
-    active_mode, active_profile = _select_profile(migrated, None, target)
-    migrated_values, _migrated_value_sources, _migrated_profiles = _normalized_values(
-        migrated, migrated_sources, active_mode, active_profile, target
-    )
-    _validate_flat_values(migrated_values, require_provider_settings=True)
-
-    backup_path = _next_backup_path(target)
-    if dry_run:
-        return {
-            "status": "planned",
-            "config_path": str(target),
-            "from_schema_version": schema_report["schema_version"],
-            "to_schema_version": SCHEMA_VERSION,
-            "active_mode": active_mode,
-            "active_profile": active_profile,
-            "backup_path": str(backup_path),
-        }
-    try:
-        shutil.copy2(target, backup_path)
-        atomic_write_text(target, migrated_text)
-    except OSError as exc:
-        raise ConfigError(f"Cannot migrate config file {target}: {exc}") from exc
+    _layer, schema_report = _load_yaml(target)
     return {
-        "status": "migrated",
+        "status": "unchanged",
         "config_path": str(target),
-        "from_schema_version": schema_report["schema_version"],
-        "to_schema_version": SCHEMA_VERSION,
-        "active_mode": active_mode,
-        "active_profile": active_profile,
-        "backup_path": str(backup_path),
+        "schema_version": schema_report["schema_version"],
+        "effective_schema_version": SCHEMA_VERSION,
+        "backup_path": None,
     }

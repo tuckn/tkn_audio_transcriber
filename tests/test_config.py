@@ -4,6 +4,7 @@ import pytest
 import yaml
 
 from audio_transcriber.config import (
+    BUILT_IN_CONFIG,
     SCHEMA_VERSION,
     AzureSpeechTranscriptionConfig,
     ConfigError,
@@ -22,33 +23,30 @@ def test_config_precedence_deep_merge_sources_and_schema_reports(tmp_path: Path)
     (home / ".tkn" / "audio_transcriber").mkdir(parents=True)
     (cwd / ".tkn").mkdir(parents=True)
     (home / ".tkn" / "audio_transcriber" / "config.yaml").write_text(
-        'schema_version: "3.0.0"\n'
-        "transcription:\n"
+        'schema_version: "5.0.0"\n'
+        "transcription_profiles:\n"
         "  local:\n"
-        "    profiles:\n"
-        "      local-small:\n"
-        "        language: en\n"
-        "        chunk_seconds: 100\n",
+        "    local-small:\n"
+        "      language: en\n"
+        "      chunk_seconds: 100\n",
         encoding="utf-8",
     )
     (cwd / ".tkn" / "config.yaml").write_text(
-        'schema_version: "3.0.0"\n'
-        "transcription:\n"
+        'schema_version: "5.0.0"\n'
+        "transcription_profiles:\n"
         "  local:\n"
-        "    profiles:\n"
-        "      local-small:\n"
-        "        chunk_seconds: 200\n"
-        "        beam_size: 2\n",
+        "    local-small:\n"
+        "      chunk_seconds: 200\n"
+        "      beam_size: 2\n",
         encoding="utf-8",
     )
     explicit.write_text(
-        'schema_version: "3.0.7"\n'
-        "transcription:\n"
+        'schema_version: "5.0.7"\n'
+        "transcription_profiles:\n"
         "  local:\n"
-        "    profiles:\n"
-        "      local-small:\n"
-        "        beam_size: 3\n"
-        "        model: medium\n",
+        "    local-small:\n"
+        "      beam_size: 3\n"
+        "      model: medium\n",
         encoding="utf-8",
     )
 
@@ -76,7 +74,8 @@ def test_config_precedence_deep_merge_sources_and_schema_reports(tmp_path: Path)
         "working_directory",
         "explicit",
     ]
-    assert resolved.config_sources[-1]["schema_version"] == "3.0.7"
+    assert resolved.config_sources[-1]["schema_version"] == "5.0.7"
+    assert resolved.sources["provider"] == "built-in default"
     assert all(
         source["effective_schema_version"] == SCHEMA_VERSION
         for source in resolved.config_sources
@@ -103,16 +102,15 @@ def test_named_profiles_can_select_multiple_local_models(tmp_path: Path) -> None
 def test_custom_profile_inherits_provider_defaults(tmp_path: Path) -> None:
     config = tmp_path / "config.yaml"
     config.write_text(
-        'schema_version: "3.0.0"\n'
+        'schema_version: "5.0.0"\n'
         "transcription:\n"
-        "  active:\n"
-        "    mode: local\n"
-        "    profile: local-gpu\n"
+        "  profile: local/local-gpu\n"
+        "transcription_profiles:\n"
         "  local:\n"
-        "    profiles:\n"
-        "      local-gpu:\n"
-        "        model: medium\n"
-        "        device: cuda\n",
+        "    local-gpu:\n"
+        "      provider: faster-whisper\n"
+        "      model: medium\n"
+        "      device: cuda\n",
         encoding="utf-8",
     )
 
@@ -120,7 +118,12 @@ def test_custom_profile_inherits_provider_defaults(tmp_path: Path) -> None:
         cwd=tmp_path, home=tmp_path / "home", explicit_config=config
     )
 
+    assert resolved.active_mode == "local"
     assert resolved.active_profile == "local-gpu"
+    assert resolved.profile_selector == "local/local-gpu"
+    assert resolved.active_mode_source == resolved.active_profile_source
+    assert resolved.active_profile_source.startswith("explicit config:")
+    assert resolved.sources["provider"].startswith("explicit config:")
     assert resolved.values["model"] == "medium"
     assert resolved.values["device"] == "cuda"
     assert resolved.values["language"] == "ja"
@@ -135,40 +138,90 @@ def test_custom_profile_inherits_provider_defaults(tmp_path: Path) -> None:
         ('schema_version: "2.0"\n', "expected a quoted MAJOR.MINOR.PATCH"),
         ('schema_version: "2.0.0-rc1"\n', "expected a quoted MAJOR.MINOR.PATCH"),
         ('schema_version: "0.9.0"\n', "Unsupported older schema_version"),
-        ('schema_version: "2.1.0"\n', "Unsupported legacy schema_version"),
-        ('schema_version: "3.4.0"\n', "Unsupported legacy schema_version"),
-        ('schema_version: "4.1.0"\n', "Unsupported newer schema_version"),
-        ('schema_version: "5.0.0"\n', "Unsupported newer schema_version"),
-        ('schema_version: "3.0.0"\nunknown_key: value\n', "Unknown config key"),
+        ("schema_version: 1\n", "expected a quoted MAJOR.MINOR.PATCH"),
+        ('schema_version: "1.1.0"\n', "Unsupported older schema_version"),
+        ('schema_version: "2.0.0"\n', "Unsupported older schema_version"),
+        ('schema_version: "3.3.0"\n', "Unsupported older schema_version"),
+        ('schema_version: "4.0.0"\n', "no migration path is available"),
+        ('schema_version: "5.1.0"\n', "Unsupported newer schema_version"),
+        ('schema_version: "6.0.0"\n', "Unsupported newer schema_version"),
+        ('schema_version: "5.0.0"\nunknown_key: value\n', "Unknown config key"),
         (
-            'schema_version: "3.0.0"\n'
-            "transcription:\n"
+            'schema_version: "5.0.0"\n'
+            "transcription_profiles:\n"
             "  local:\n"
-            "    profiles:\n"
-            "      local-small:\n"
-            "        chunk_seconds: false\n",
+            "    local-small:\n"
+            "      chunk_seconds: false\n",
             "must be an integer",
         ),
         (
-            'schema_version: "3.0.0"\nprocessing:\n  heartbeat_seconds: 0\n',
+            'schema_version: "5.0.0"\nprocessing:\n  heartbeat_seconds: 0\n',
             "greater than zero",
         ),
         (
-            'schema_version: "3.0.0"\n'
-            "transcription:\n"
-            "  active:\n"
-            "    mode: local\n"
-            "    profile: missing\n",
+            'schema_version: "5.0.0"\ntranscription:\n  profile: local/missing\n',
             "Unknown transcription profile",
         ),
         (
-            'schema_version: "3.0.0"\n'
+            'schema_version: "5.0.0"\ntranscription:\n  profile: local-small\n',
+            "transcription.profile must be local/NAME or cloud/NAME",
+        ),
+        (
+            'schema_version: "5.0.0"\ntranscription:\n  profile: edge/local-small\n',
+            "transcription.profile must be local/NAME or cloud/NAME",
+        ),
+        (
+            'schema_version: "5.0.0"\ntranscription:\n  profile: local/\n',
+            "transcription.profile must be local/NAME or cloud/NAME",
+        ),
+        (
+            'schema_version: "5.0.0"\n'
             "transcription:\n"
+            "  active:\n"
+            "    mode: local\n"
+            "    profile: local-small\n",
+            "Unknown config key.* at transcription: active",
+        ),
+        (
+            'schema_version: "5.0.0"\ntranscription_profiles:\n  edge: {}\n',
+            "Unknown config key.* at transcription_profiles: edge",
+        ),
+        (
+            'schema_version: "5.0.0"\n'
+            "transcription_profiles:\n"
             "  local:\n"
-            "    profiles:\n"
-            "      invalid:\n"
-            "        endpoint: https://example.invalid\n",
-            "Unknown config key",
+            "    local-small:\n"
+            "      provider: azure-speech-fast\n",
+            "provider must be 'faster-whisper' for a local profile",
+        ),
+        (
+            'schema_version: "5.0.0"\n'
+            "transcription_profiles:\n"
+            "  cloud:\n"
+            "    azure-ja:\n"
+            "      provider: faster-whisper\n",
+            "provider must be 'azure-speech-fast' for a cloud profile",
+        ),
+        (
+            'schema_version: "5.0.0"\n'
+            "transcription_profiles:\n"
+            "  local:\n"
+            "    custom:\n"
+            "      model: medium\n",
+            r"transcription_profiles\.local\.custom\.provider is required",
+        ),
+        (
+            'schema_version: "5.0.0"\ngeneration:\n  active_profile: codex\n',
+            "Unknown config key.* at generation: active_profile",
+        ),
+        (
+            'schema_version: "5.0.0"\n'
+            "transcription_profiles:\n"
+            "  local:\n"
+            "    invalid:\n"
+            "      provider: faster-whisper\n"
+            "      endpoint: https://example.invalid\n",
+            "Unknown config key.* at transcription_profiles.local.invalid: endpoint",
         ),
     ],
 )
@@ -183,12 +236,12 @@ def test_each_config_source_is_validated_before_merge(tmp_path: Path) -> None:
     home_config = tmp_path / "home" / ".tkn" / "audio_transcriber" / "config.yaml"
     home_config.parent.mkdir(parents=True)
     home_config.write_text(
-        'schema_version: "3.0.0"\nprocessing:\n  heartbeat_seconds: false\n',
+        'schema_version: "5.0.0"\nprocessing:\n  heartbeat_seconds: false\n',
         encoding="utf-8",
     )
     explicit = tmp_path / "explicit.yaml"
     explicit.write_text(
-        'schema_version: "3.0.0"\nprocessing:\n  heartbeat_seconds: 60\n',
+        'schema_version: "5.0.0"\nprocessing:\n  heartbeat_seconds: 60\n',
         encoding="utf-8",
     )
 
@@ -198,85 +251,6 @@ def test_each_config_source_is_validated_before_merge(tmp_path: Path) -> None:
             home=tmp_path / "home",
             explicit_config=explicit,
         )
-
-
-def test_legacy_integer_schema_is_structurally_migrated_in_memory(tmp_path: Path) -> None:
-    config = tmp_path / "config.yaml"
-    config.write_text("schema_version: 1\nlanguage: en\n", encoding="utf-8")
-
-    resolved = resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=config)
-
-    assert resolved.has_in_memory_migrations
-    assert resolved.config_sources[-1]["migration"] == {
-        "kind": "legacy_flat_to_execution_modes",
-        "from_version": 1,
-        "to_version": SCHEMA_VERSION,
-        "persistent_config_updated": False,
-    }
-    assert resolved.values["language"] == "en"
-
-
-def test_schema_1_1_remains_readable_and_migratable(tmp_path: Path) -> None:
-    config = tmp_path / "config.yaml"
-    config.write_text(
-        'schema_version: "1.1.0"\nprovider: faster-whisper\nmodel: medium\n',
-        encoding="utf-8",
-    )
-
-    resolved = resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=config)
-    planned = migrate_config_file(config, dry_run=True)
-
-    assert resolved.has_in_memory_migrations
-    assert resolved.values["provider"] == "faster-whisper"
-    assert resolved.values["model"] == "medium"
-    assert planned["from_schema_version"] == "1.1.0"
-    assert planned["to_schema_version"] == SCHEMA_VERSION
-    assert planned["active_mode"] == "local"
-    assert planned["active_profile"] == "local-small"
-
-
-def test_schema_2_profiles_are_grouped_in_memory_and_migratable(tmp_path: Path) -> None:
-    config = tmp_path / "config.yaml"
-    config.write_text(
-        'schema_version: "2.0.0"\n'
-        "transcription:\n"
-        "  active_profile: azure-custom\n"
-        "  profiles:\n"
-        "    local-custom:\n"
-        "      provider: faster-whisper\n"
-        "      model: medium\n"
-        "    azure-custom:\n"
-        "      provider: azure-speech-fast\n"
-        "      endpoint: https://example.cognitiveservices.azure.com/\n",
-        encoding="utf-8",
-    )
-
-    resolved = resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=config)
-    planned = migrate_config_file(config, dry_run=True)
-
-    assert resolved.has_in_memory_migrations
-    assert resolved.active_mode == "cloud"
-    assert resolved.active_profile == "azure-custom"
-    assert resolved.transcription.mode == "cloud"
-    assert isinstance(resolved.transcription, AzureSpeechTranscriptionConfig)
-    assert planned["from_schema_version"] == "2.0.0"
-    assert planned["to_schema_version"] == SCHEMA_VERSION
-    assert planned["active_mode"] == "cloud"
-
-    migrated = migrate_config_file(config)
-    migrated_yaml = yaml.safe_load(config.read_text(encoding="utf-8"))
-    assert migrated["status"] == "migrated"
-    assert migrated_yaml["schema_version"] == SCHEMA_VERSION
-    assert migrated_yaml["transcription"]["active"] == {
-        "mode": "cloud",
-        "profile": "azure-custom",
-    }
-    assert migrated_yaml["transcription"]["local"]["profiles"]["local-custom"][
-        "model"
-    ] == "medium"
-    assert migrated_yaml["transcription"]["cloud"]["profiles"]["azure-custom"][
-        "endpoint"
-    ] == "https://example.cognitiveservices.azure.com/"
 
 
 def test_provider_cannot_be_overridden_independently(tmp_path: Path) -> None:
@@ -314,7 +288,7 @@ def test_schema_version_cannot_be_a_cli_override(tmp_path: Path) -> None:
         resolve_config(
             cwd=tmp_path,
             home=tmp_path / "home",
-            cli_overrides={"schema_version": "3.0.0"},
+            cli_overrides={"schema_version": "5.0.0"},
         )
 
 
@@ -323,7 +297,7 @@ def test_relative_paths_are_resolved_from_current_working_directory(
 ) -> None:
     config = tmp_path / "config.yaml"
     config.write_text(
-        'schema_version: "3.0.0"\nfolders:\n  output: relative/output\n',
+        'schema_version: "5.0.0"\nfolders:\n  output: relative/output\n',
         encoding="utf-8",
     )
     resolved = resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=config)
@@ -344,9 +318,14 @@ def test_packaged_example_has_hierarchical_complete_schema(tmp_path: Path) -> No
     assert text.splitlines()[0] == f'schema_version: "{SCHEMA_VERSION}"'
     assert loaded["schema_version"] == SCHEMA_VERSION
     assert set(loaded) == {
-        "schema_version", "sources", "transcription", "folders", "processing",
-        "genai_profiles", "generation",
+        "schema_version", "sources", "processing", "transcription", "folders",
+        "generation", "transcription_profiles", "genai_profiles",
     }
+    built_in = {
+        key: value for key, value in loaded.items()
+        if key not in {"schema_version", "sources"}
+    }
+    assert built_in == BUILT_IN_CONFIG
     assert loaded["genai_profiles"] == {
         "codex-default": {"provider": "codex", "model": None},
         "claude-default": {"provider": "claude-code", "model": None},
@@ -355,17 +334,17 @@ def test_packaged_example_has_hierarchical_complete_schema(tmp_path: Path) -> No
     }
     assert loaded["generation"] == {"genai_profile": "codex-default", "max_candidates": 30}
     assert loaded["sources"] == {}
-    assert loaded["transcription"]["active"] == {
-        "mode": "local",
-        "profile": "local-small",
-    }
-    assert set(loaded["transcription"]["local"]["profiles"]) == {
+    assert loaded["transcription"] == {"profile": "local/local-small"}
+    assert set(loaded["transcription_profiles"]["local"]) == {
         "local-small",
         "local-large",
         "gpu-quality",
         "gpu-fast",
     }
-    assert set(loaded["transcription"]["cloud"]["profiles"]) == {"azure-ja"}
+    assert set(loaded["transcription_profiles"]["cloud"]) == {"azure-ja"}
+    assert {
+        profile["provider"] for profile in loaded["transcription_profiles"]["local"].values()
+    } == {"faster-whisper"}
     assert resolve_config(cwd=tmp_path, home=tmp_path / "home").values["model"] == "small"
 
 
@@ -391,55 +370,17 @@ def test_config_init_is_idempotent_and_protects_edited_config(tmp_path: Path) ->
     assert backup.read_text(encoding="utf-8") == "schema_version: 1\nmodel: edited\n"
 
 
-def test_config_migrate_restructures_with_dry_run_backup_and_atomic_update(
-    tmp_path: Path,
-) -> None:
-    target = tmp_path / "config.yaml"
-    original = (
-        'schema_version: "1.1.0"\n'
-        "provider: faster-whisper\n"
-        "model: medium\n"
-        "language: en\n"
-        "output_dir: relative/output\n"
-    )
-    target.write_text(original, encoding="utf-8")
-
-    planned = migrate_config_file(target, dry_run=True)
-    assert planned["status"] == "planned"
-    assert target.read_text(encoding="utf-8") == original
-    assert not Path(str(planned["backup_path"])).exists()
-
-    migrated = migrate_config_file(target)
-    migrated_yaml = yaml.safe_load(target.read_text(encoding="utf-8"))
-    assert migrated["status"] == "migrated"
-    assert migrated_yaml["schema_version"] == SCHEMA_VERSION
-    assert migrated_yaml["transcription"]["active"] == {
-        "mode": "local",
-        "profile": "local-small",
-    }
-    assert migrated_yaml["transcription"]["local"]["profiles"]["local-small"][
-        "model"
-    ] == "medium"
-    assert migrated_yaml["transcription"]["local"]["profiles"]["local-small"][
-        "language"
-    ] == "en"
-    assert migrated_yaml["folders"]["output"] == "relative/output"
-    backup = Path(str(migrated["backup_path"]))
-    assert backup.read_text(encoding="utf-8") == original
-    assert not resolve_config(
-        cwd=tmp_path, home=tmp_path / "home", explicit_config=target
-    ).has_in_memory_migrations
-
-
 def test_config_migrate_leaves_current_schema_unchanged(tmp_path: Path) -> None:
     target = tmp_path / "config.yaml"
-    text = 'schema_version: "3.0.3"\nfolders:\n  output: .\n'
+    text = 'schema_version: "5.0.3"\nfolders:\n  output: .\n'
     target.write_text(text, encoding="utf-8")
 
-    result = migrate_config_file(target)
+    result = migrate_config_file(target, dry_run=True)
+    assert migrate_config_file(target) == result
 
     assert result["status"] == "unchanged"
-    assert result["schema_version"] == "3.0.3"
+    assert result["schema_version"] == "5.0.3"
+    assert result["effective_schema_version"] == SCHEMA_VERSION
     assert target.read_text(encoding="utf-8") == text
     assert not list(tmp_path.glob("*.bak*"))
 
@@ -453,12 +394,11 @@ def test_azure_profile_requires_valid_endpoint_only_when_selected(tmp_path: Path
 
     azure = tmp_path / "azure.yaml"
     azure.write_text(
-        'schema_version: "3.0.0"\n'
-        "transcription:\n"
+        'schema_version: "5.0.0"\n'
+        "transcription_profiles:\n"
         "  cloud:\n"
-        "    profiles:\n"
-        "      azure-ja:\n"
-        "        endpoint: https://example.cognitiveservices.azure.com/\n",
+        "    azure-ja:\n"
+        "      endpoint: https://example.cognitiveservices.azure.com/\n",
         encoding="utf-8",
     )
     resolved = resolve_config(
@@ -467,14 +407,16 @@ def test_azure_profile_requires_valid_endpoint_only_when_selected(tmp_path: Path
         explicit_config=azure,
         profile="cloud/azure-ja",
     )
+    assert isinstance(resolved.transcription, AzureSpeechTranscriptionConfig)
     assert resolved.values["provider"] == "azure-speech-fast"
+    assert resolved.sources["provider"] == "built-in default"
     assert resolved.values["azure_speech_api_version"] == "2025-10-15"
 
 
 def test_cloud_upload_approval_cannot_be_saved_in_config(tmp_path: Path) -> None:
     config = tmp_path / "config.yaml"
     config.write_text(
-        'schema_version: "3.0.0"\n'
+        'schema_version: "5.0.0"\n'
         "transcription:\n"
         "  allow_cloud_upload: true\n",
         encoding="utf-8",
@@ -492,7 +434,7 @@ def _write(path: Path, text: str) -> Path:
 def test_sources_resolve_defaults_and_paths_relative_to_their_config(tmp_path: Path) -> None:
     config = _write(
         tmp_path / "configs" / "config.yaml",
-        'schema_version: "3.2.0"\n'
+        'schema_version: "5.0.0"\n'
         "sources:\n"
         "  recordings:\n"
         "    input_dir: inbox\n"
@@ -531,7 +473,7 @@ def test_later_config_replaces_or_removes_a_source_entry(tmp_path: Path) -> None
     home = tmp_path / "home"
     _write(
         home / ".tkn" / "audio_transcriber" / "config.yaml",
-        'schema_version: "3.2.0"\n'
+        'schema_version: "5.0.0"\n'
         "sources:\n"
         "  keep:\n"
         "    input_dir: a\n"
@@ -543,7 +485,7 @@ def test_later_config_replaces_or_removes_a_source_entry(tmp_path: Path) -> None
     )
     explicit = _write(
         tmp_path / "explicit.yaml",
-        'schema_version: "3.2.0"\n'
+        'schema_version: "5.0.0"\n'
         "sources:\n"
         "  keep:\n"
         "    input_dir: e\n"
@@ -580,36 +522,30 @@ def test_later_config_replaces_or_removes_a_source_entry(tmp_path: Path) -> None
     ],
 )
 def test_invalid_sources_are_rejected(tmp_path: Path, body: str, message: str) -> None:
-    config = _write(tmp_path / "config.yaml", f'schema_version: "3.2.0"\nsources:\n{body}')
+    config = _write(tmp_path / "config.yaml", f'schema_version: "5.0.0"\nsources:\n{body}')
     with pytest.raises(ConfigError, match=message):
         resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=config)
 
 
-def test_sources_require_schema_3_2(tmp_path: Path) -> None:
+def test_source_keeps_its_own_profile_and_archive_name(tmp_path: Path) -> None:
     config = _write(
         tmp_path / "config.yaml",
-        'schema_version: "3.1.0"\nsources:\n  s:\n    input_dir: a\n    output_dir: b\n',
-    )
-    with pytest.raises(ConfigError, match=r'sources requires schema_version "3\.2\.0"'):
-        resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=config)
-
-
-def test_created_time_original_archive_name_requires_schema_3_3(tmp_path: Path) -> None:
-    body = (
+        'schema_version: "5.0.0"\n'
+        "transcription:\n  profile: cloud/azure-ja\n"
         "sources:\n  s:\n    input_dir: a\n    output_dir: b\n"
-        "    archive:\n      dir: c\n      name: created-time-original\n"
+        "    profile: local/gpu-quality\n"
+        "    archive:\n      dir: c\n      name: created-time-original\n",
     )
-    old = _write(tmp_path / "old.yaml", f'schema_version: "3.2.0"\n{body}')
-    with pytest.raises(
-        ConfigError,
-        match=r'sources\.s\.archive\.name created-time-original requires schema_version "3\.3\.0"',
-    ):
-        resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=old)
+    # The file's own selection needs an endpoint. `pull` resolves each source with the
+    # source's profile instead (tests/test_pull.py), as the explicit selector does here.
+    with pytest.raises(ConfigError, match="azure_speech_endpoint is required"):
+        resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=config)
+    resolved = resolve_config(
+        cwd=tmp_path, home=tmp_path / "home", explicit_config=config, profile="local/gpu-quality"
+    )
+    source = resolved.input_sources[0]
+    assert source.profile == resolved.profile_selector == "local/gpu-quality"
+    assert resolved.active_profile_source == "CLI option"
+    assert source.archive is not None
+    assert source.archive.name == "created-time-original"
 
-    # Compare whole versions: schema 4.0.0 has a lower minor number than 3.3.0.
-    for version in ("3.3.0", "4.0.0"):
-        new = _write(tmp_path / f"new-{version}.yaml", f'schema_version: "{version}"\n{body}')
-        resolved = resolve_config(cwd=tmp_path, home=tmp_path / "home", explicit_config=new)
-        archive = resolved.input_sources[0].archive
-        assert archive is not None
-        assert archive.name == "created-time-original"

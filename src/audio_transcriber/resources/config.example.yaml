@@ -1,4 +1,4 @@
-schema_version: "4.0.0"
+schema_version: "5.0.0"
 
 # Folders whose new media files `pull` archives and transcribes. Relative paths
 # are relative to this config file. `{year}` is the year of the file's creation
@@ -8,7 +8,7 @@ sources: {}
 #    input_dir: ~/Documents/Sound Recordings
 #    include: ['*.flac', '*.m4a', '*.mp3', '*.wav']
 #    min_age_seconds: 30  # Skip files written within this many seconds.
-#    profile: cloud/azure-ja  # null: use transcription.active.
+#    profile: cloud/azure-ja  # null: use transcription.profile.
 #    output_dir: 'C:\path\to\transcripts\{year}'
 #    archive:  # Optional. Without it, files are transcribed in place and kept.
 #      dir: 'C:\path\to\recordings\{year}'
@@ -21,13 +21,6 @@ sources: {}
 #      context_files: [./vocabulary/recordings.txt]  # UTF-8 background text, such as
 #                                                    # a glossary. Relative to this file.
 
-folders:
-  # Root for source-name/hash folders containing audio.flac and transcripts.
-  output: .
-  local_models: ~/.cache/audio_transcriber/models
-  huggingface_cache: ~/.cache/audio_transcriber/huggingface
-  state: ~/.tkn/audio_transcriber/state
-
 processing:
   ffmpeg:
     executable: ffmpeg
@@ -37,68 +30,88 @@ processing:
   keep_working_files: false
 
 transcription:
-  active:
-    mode: local
-    profile: local-small
+  # A profile in transcription_profiles, as local/NAME or cloud/NAME. A cloud
+  # profile uploads audio derived from the media. --profile and
+  # sources.<name>.profile override it.
+  profile: local/local-small
 
+folders:
+  # Root for source-name/hash folders containing audio.flac and transcripts.
+  # --output-dir overrides it; a source always uses its own output_dir.
+  output: .
+  local_models: ~/.cache/audio_transcriber/models
+  huggingface_cache: ~/.cache/audio_transcriber/huggingface
+  state: ~/.tkn/audio_transcriber/state
+
+generation:
+  genai_profile: codex-default  # A name in genai_profiles; --genai-profile overrides it.
+  max_candidates: 30  # suggest-phrases only.
+
+# Named transcription settings, grouped by where the audio is processed. Layers
+# merge by name and field, so a later file can change one field of a profile.
+# A new profile needs `provider`. A field it leaves out takes the value shown
+# here for local-small (local) or azure-ja (cloud), not that of a profile with
+# a similar name.
+transcription_profiles:
   local:
-    provider: faster-whisper
-    profiles:
-      local-small:
-        model: small
-        language: ja
-        chunk_seconds: 600
-        beam_size: 1
-        compute_type: int8
-        device: cpu
+    local-small:
+      provider: faster-whisper
+      model: small
+      language: ja
+      chunk_seconds: 600
+      beam_size: 1
+      compute_type: int8
+      device: cpu
 
-      local-large:
-        model: large-v3
-        language: ja
-        chunk_seconds: 600
-        beam_size: 1
-        compute_type: int8
-        device: cpu
+    local-large:
+      provider: faster-whisper
+      model: large-v3
+      language: ja
+      chunk_seconds: 600
+      beam_size: 1
+      compute_type: int8
+      device: cpu
 
-      gpu-quality:
-        model: large-v3
-        language: ja
-        chunk_seconds: 600
-        beam_size: 5
-        compute_type: float16
-        device: cuda
+    gpu-quality:
+      provider: faster-whisper
+      model: large-v3
+      language: ja
+      chunk_seconds: 600
+      beam_size: 5
+      compute_type: float16
+      device: cuda
 
-      gpu-fast:
-        model: large-v3
-        language: ja
-        chunk_seconds: 600
-        beam_size: 1
-        compute_type: int8_float16
-        device: cuda
+    gpu-fast:
+      provider: faster-whisper
+      model: large-v3
+      language: ja
+      chunk_seconds: 600
+      beam_size: 1
+      compute_type: int8_float16
+      device: cuda
 
   cloud:
-    provider: azure-speech-fast
-    profiles:
-      # Azure Speech Fast Transcription does not expose a Whisper-style model name.
-      # Set the real endpoint only in a user or ignored working-directory config.
-      azure-ja:
-        endpoint: null
-        region: japaneast
-        api_version: "2025-10-15"
-        locale: ja-JP
-        diarization:
-          enabled: false
-          max_speakers: 8
-        profanity_filter_mode: "None"
-        phrase_list:
-          phrases: []
-          # UTF-8, one phrase per line. Relative to this config file.
-          files: []
-        authentication:
-          reuse_cached_credentials: true
-        request:
-          timeout_seconds: 600
-          max_retries: 3
+    # Azure Speech Fast Transcription does not expose a Whisper-style model name.
+    # Set the real endpoint only in a user or ignored working-directory config.
+    azure-ja:
+      provider: azure-speech-fast
+      endpoint: null
+      region: japaneast
+      api_version: "2025-10-15"
+      locale: ja-JP
+      diarization:
+        enabled: false
+        max_speakers: 8
+      profanity_filter_mode: "None"
+      phrase_list:
+        phrases: []
+        # UTF-8, one phrase per line. Relative to this config file.
+        files: []
+      authentication:
+        reuse_cached_credentials: true
+      request:
+        timeout_seconds: 600
+        max_retries: 3
 
 # Generative AI connections for correct and suggest-phrases, passed to
 # tkn-genai-bridge as its Profile settings. The shared tkn-genai-bridge config is not read. Layers
@@ -122,7 +135,3 @@ genai_profiles:
 #    model: gpt-6.2-sol
 #    reasoning_effort: high
 #    timeout_seconds: 1800
-
-generation:
-  genai_profile: codex-default  # A name in genai_profiles; --genai-profile overrides it.
-  max_candidates: 30  # suggest-phrases only.

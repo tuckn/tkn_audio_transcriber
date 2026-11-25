@@ -145,8 +145,8 @@ def test_config_list_outputs_machine_readable_json(
     assert main(["config", "list", "--json"]) == 0
     captured = capsys.readouterr()  # type: ignore[attr-defined]
     payload = json.loads(captured.out)
-    assert payload["schema_version"] == "4.0.0"
-    assert payload["effective_schema_version"] == "4.0.0"
+    assert payload["schema_version"] == "5.0.0"
+    assert payload["effective_schema_version"] == "5.0.0"
     assert payload["has_in_memory_migrations"] is False
     assert payload["active_mode"] == "local"
     assert payload["active_profile"] == "local-small"
@@ -154,8 +154,8 @@ def test_config_list_outputs_machine_readable_json(
         "kind": "built_in",
         "path": None,
         "exists": True,
-        "schema_version": "4.0.0",
-        "effective_schema_version": "4.0.0",
+        "schema_version": "5.0.0",
+        "effective_schema_version": "5.0.0",
         "migration": None,
     }
     assert payload["values"]["model"]["value"] == "small"
@@ -182,13 +182,13 @@ def test_config_list_is_read_only_with_sources_and_profile(
     user.parent.mkdir(parents=True)
     working.parent.mkdir(parents=True)
     user.write_text(
-        'schema_version: "3.0.0"\nprocessing:\n  heartbeat_seconds: 7\n', encoding="utf-8"
+        'schema_version: "5.0.0"\nprocessing:\n  heartbeat_seconds: 7\n', encoding="utf-8"
     )
     working.write_text(
-        'schema_version: "3.0.0"\nprocessing:\n  heartbeat_seconds: 8\n', encoding="utf-8"
+        'schema_version: "5.0.0"\nprocessing:\n  heartbeat_seconds: 8\n', encoding="utf-8"
     )
     explicit.write_text(
-        'schema_version: "3.0.0"\nprocessing:\n  heartbeat_seconds: 9\n', encoding="utf-8"
+        'schema_version: "5.0.0"\nprocessing:\n  heartbeat_seconds: 9\n', encoding="utf-8"
     )
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
@@ -233,7 +233,7 @@ def test_config_list_is_read_only_with_sources_and_profile(
         assert "active_profile_source=CLI option" in lines
         assert "values.heartbeat_seconds.value=9" in lines
         assert f"values.heartbeat_seconds.source=explicit config: {explicit}" in lines
-        assert "config_sources[3].schema_version=3.0.0" in lines
+        assert "config_sources[3].schema_version=5.0.0" in lines
         assert f"loaded_files[0]={user}" in lines
         assert f"loaded_files[1]={working}" in lines
         assert f"loaded_files[2]={explicit}" in lines
@@ -341,27 +341,6 @@ def test_config_profiles_lists_and_selects_profiles(
     )["active"] is True
 
 
-def test_config_list_warns_for_legacy_integer_schema(
-    tmp_path: Path, monkeypatch: object, capsys: object
-) -> None:
-    isolated_home = tmp_path / "home"
-    isolated_home.mkdir()
-    config = tmp_path / "legacy.yaml"
-    config.write_text("schema_version: 1\nlanguage: en\n", encoding="utf-8")
-    monkeypatch.setenv("HOME", str(isolated_home))  # type: ignore[attr-defined]
-    monkeypatch.setenv("USERPROFILE", str(isolated_home))  # type: ignore[attr-defined]
-    monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
-
-    assert main(["--config", str(config), "config", "list", "--json"]) == 0
-
-    captured = capsys.readouterr()  # type: ignore[attr-defined]
-    payload = json.loads(captured.out)
-    assert payload["has_in_memory_migrations"] is True
-    assert payload["config_sources"][-1]["schema_version"] == 1
-    assert "[WARNING]" in captured.err
-    assert "config migrate" in captured.err
-
-
 def test_config_init_and_migrate_commands(
     tmp_path: Path, monkeypatch: object, capsys: object
 ) -> None:
@@ -375,19 +354,26 @@ def test_config_init_and_migrate_commands(
     assert main(["config", "init", str(target), "--json"]) == 0
     initialized = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
     assert initialized["status"] == "created"
-    assert target.read_text(encoding="utf-8").startswith('schema_version: "4.0.0"')
+    assert target.read_text(encoding="utf-8").startswith('schema_version: "5.0.0"')
 
-    target.write_text("schema_version: 1\nlanguage: en\n", encoding="utf-8")
-    assert main(["config", "migrate", str(target), "--dry-run", "--json"]) == 0
-    planned = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
-    assert planned["status"] == "planned"
-    assert target.read_text(encoding="utf-8").startswith("schema_version: 1\n")
-
+    # A file in the current schema needs no change.
+    current = target.read_text(encoding="utf-8")
     assert main(["config", "migrate", str(target), "--json"]) == 0
-    migrated = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
-    assert migrated["status"] == "migrated"
-    assert target.read_text(encoding="utf-8").startswith('schema_version: "4.0.0"')
-    assert Path(migrated["backup_path"]).is_file()
+    checked = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
+    assert checked["status"] == "unchanged"
+    assert checked["backup_path"] is None
+    assert target.read_text(encoding="utf-8") == current
+
+    # No older schema has a migration path, so the file is refused and kept.
+    older = 'schema_version: "4.0.0"\nfolders:\n  output: .\n'
+    target.write_text(older, encoding="utf-8")
+    for arguments in (["--dry-run"], []):
+        assert main(["config", "migrate", str(target), *arguments, "--json"]) == 2
+        captured = capsys.readouterr()  # type: ignore[attr-defined]
+        assert "Unsupported older schema_version" in captured.err
+        assert "no migration path" in captured.err
+    assert target.read_text(encoding="utf-8") == older
+    assert not list(tmp_path.glob("*.bak*"))
 
 
 def test_transcribe_dry_run_defaults_output_to_current_working_directory(
@@ -476,12 +462,11 @@ def test_azure_profile_dry_run_does_not_require_upload_approval(
     isolated_home.mkdir()
     config = tmp_path / "azure.yaml"
     config.write_text(
-        'schema_version: "3.0.0"\n'
-        "transcription:\n"
+        'schema_version: "5.0.0"\n'
+        "transcription_profiles:\n"
         "  cloud:\n"
-        "    profiles:\n"
-        "      azure-ja:\n"
-        "        endpoint: https://example.cognitiveservices.azure.com/\n",
+        "    azure-ja:\n"
+        "      endpoint: https://example.cognitiveservices.azure.com/\n",
         encoding="utf-8",
     )
     source = tmp_path / "audio.wav"

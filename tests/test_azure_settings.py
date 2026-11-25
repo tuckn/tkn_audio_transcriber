@@ -27,9 +27,9 @@ def resolve_cloud(tmp_path: Path, **overrides: object) -> ResolvedConfig:
 
 
 def test_explicit_example_defaults_and_effective_defaults(tmp_path: Path) -> None:
-    profile = yaml.safe_load(config_example_text())["transcription"]["cloud"]["profiles"][
-        "azure-ja"
-    ]
+    profiles = yaml.safe_load(config_example_text())["transcription_profiles"]
+    profile = profiles["cloud"]["azure-ja"]
+    assert profile["provider"] == "azure-speech-fast"
     assert profile["diarization"] == {"enabled": False, "max_speakers": 8}
     assert profile["profanity_filter_mode"] == "None"
     assert profile["phrase_list"] == {"phrases": [], "files": []}
@@ -77,8 +77,8 @@ def test_invalid_yaml_settings(tmp_path: Path, profile_settings: dict[str, objec
     path.write_text(
         yaml.safe_dump(
             {
-                "schema_version": "3.0.0",
-                "transcription": {"cloud": {"profiles": {"azure-ja": profile_settings}}},
+                "schema_version": "5.0.0",
+                "transcription_profiles": {"cloud": {"azure-ja": profile_settings}},
             }
         ),
         encoding="utf-8",
@@ -94,14 +94,12 @@ def test_phrase_list_yaml_replaces_list_and_affects_fingerprint(tmp_path: Path) 
     path.write_text(
         yaml.safe_dump(
             {
-                "schema_version": "3.0.0",
-                "transcription": {
+                "schema_version": "5.0.0",
+                "transcription_profiles": {
                     "cloud": {
-                        "profiles": {
-                            "azure-ja": {
-                                "phrase_list": {"phrases": ["Contoso", "用語"]},
-                                "profanity_filter_mode": "Masked",
-                            }
+                        "azure-ja": {
+                            "phrase_list": {"phrases": ["Contoso", "用語"]},
+                            "profanity_filter_mode": "Masked",
                         }
                     }
                 },

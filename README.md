@@ -95,14 +95,12 @@ tkn-audio-transcriber config init .tkn/config.yaml
 tkn-audio-transcriber config profiles
 ```
 
-同梱されるローカル設定は `local-small`、`local-large`、`gpu-quality`、`gpu-fast`、Azure 設定は `azure-ja` です。通常使う設定は YAML の `transcription.active` で選び、1 回だけ切り替える場合はコマンドの後に `--profile MODE/NAME` を指定します。従来のコマンド前の指定も使えます。
+同梱されるローカル設定は `local-small`、`local-large`、`gpu-quality`、`gpu-fast`、Azure 設定は `azure-ja` です。通常使う設定は YAML の `transcription.profile` に `MODE/NAME` の形で書き、1 回だけ切り替える場合はコマンドの後に `--profile MODE/NAME` を指定します。従来のコマンド前の指定も使えます。
 
 ```yaml
 # config.yaml の transcription 部分だけを変更する例
 transcription:
-  active:
-    mode: local
-    profile: local-large
+  profile: local/local-large
 ```
 
 出力先の既定値は作業ディレクトリです。初回実行では `--output-dir` で場所を明示します。設定の詳しい選び方は [ローカルプロファイル](#ローカルプロファイルを調整する)と[設定の優先順位](#設定の優先順位)を参照してください。
@@ -147,7 +145,7 @@ tkn-audio-transcriber status
 | --- | --- | --- |
 | 設定を作る | [`config init`](#config-init) | 同梱例から設定を作る。既存の編集済み設定は保護する |
 | 設定を確認する | [`config list`](#config-list)、[`config profiles`](#config-profiles) | 有効値・出典、利用可能なプロファイルを表示する |
-| 旧設定を移す | [`config migrate`](#config-migrate) | 旧スキーマを検証し、バックアップ後に更新する |
+| 設定のschemaを確かめる | [`config migrate`](#config-migrate) | 設定ファイル1つが現在のschemaで書かれているかを確かめる |
 | モデルを事前取得する | [`model download`](#model-download) | ローカル認識モデルをダウンロードする |
 | 文字起こしを作る | [`transcribe`](#transcribe) | 全編 FLAC と文字起こし一式を作る |
 | 録音フォルダを処理する | [`pull`](#pull) | 設定した入力フォルダの新しいファイルを保管し、文字起こしする |
@@ -184,8 +182,6 @@ transcripts/
 
 新規ノートの生成日時は `created: "2026-10-07T09:30:00+09:00"` のように、
 ローカルのタイムゾーン付き・秒精度で記録します。`date` は出力しません。
-設定の生成・移行では日付・日時をダブルクォート、Windowsパスをシングルクォートで囲みます。
-例: `output: 'C:\path\to\transcripts'`。`file:///` や `https://` のURLはパス規約の対象外です。
 既存ノートに生成日時がない場合は、移行時に現在時刻から補完しません。
 
 | ファイル | 使い方 |
@@ -256,13 +252,13 @@ local profileにAzure専用option、cloud profileにWhisper専用optionを渡す
 
 ### `config migrate`
 
-平坦なschema 1.x設定または混在profile形式のschema 2設定を、schema 3のlocal/cloud分離構造へ移行します。
-移行後の設定を検証し、元fileの隣にbackupを作ってから原子的に置換します。
-`--dry-run`では書き込まずに計画を確認できます。
+設定ファイル1つが、現在のschemaで書かれているかを確かめます。
+現在のschemaなら `status` に `unchanged` を返し、ファイルは書き換えません。
+ほかの設定ファイルと重ねた後の内容（profileに `provider` があるかなど）は確かめません。それは [`config list`](#config-list) で確かめます。
+古いschemaから移す経路はなく、古いschemaの設定ファイルはerrorになります。
 pathを省略した場合はユーザー設定が対象です。
 
 ```console
-tkn-audio-transcriber config migrate --dry-run
 tkn-audio-transcriber config migrate
 tkn-audio-transcriber config migrate .tkn/config.yaml
 ```
@@ -556,8 +552,11 @@ tkn-audio-transcriber validate "C:\path\to\meeting_0123456789ab\transcript_local
 
 ## ローカルプロファイルを調整する
 
-以下は`transcription.modes.local.profiles.<name>`に指定する、ローカル`faster-whisper`用の設定です。
+以下は`transcription_profiles.local.<name>`に指定する、ローカル`faster-whisper`用の設定です。
 Azure Speechには適用しません。
+新しい名前のprofileには `provider: faster-whisper` を書きます。
+書かなかった項目は、名前の似たprofileの値ではなく、組み込みの既定（`local-small` の初期値）になります。
+組み込みや前の設定ファイルにあるprofileは、変える項目だけを書けば、ほかの項目と `provider` を引き継ぎます。
 推奨値は比較を始めるための候補であり、最高精度を保証するものではありません。
 
 | 設定              | 意味と実用上の影響                                                                                                                                                                                                                         |
@@ -668,30 +667,28 @@ tkn-audio-transcriber model download small --dry-run
 実際の Speech リソース名は、ユーザー設定または Git から除外した作業ディレクトリ設定に保存します。次は Azure 実行に必要な設定の抜粋です。既存の設定は残し、`endpoint` のプレースホルダーを自分の Speech リソースの URL に置き換えてください。
 
 ```yaml
-schema_version: "4.0.0"
+schema_version: "5.0.0"
 transcription:
-  active:
-    mode: cloud
-    profile: azure-ja
+  profile: cloud/azure-ja
+transcription_profiles:
   cloud:
-    provider: azure-speech-fast
-    profiles:
-      azure-ja:
-        endpoint: https://<speech-resource-name>.cognitiveservices.azure.com/
-        region: japaneast
-        api_version: "2025-10-15"
-        locale: ja-JP
-        diarization:
-          enabled: false
-          max_speakers: 8
-        profanity_filter_mode: "None"
-        phrase_list:
-          phrases: []
-        authentication:
-          reuse_cached_credentials: true
-        request:
-          timeout_seconds: 600
-          max_retries: 3
+    azure-ja:
+      provider: azure-speech-fast
+      endpoint: https://<speech-resource-name>.cognitiveservices.azure.com/
+      region: japaneast
+      api_version: "2025-10-15"
+      locale: ja-JP
+      diarization:
+        enabled: false
+        max_speakers: 8
+      profanity_filter_mode: "None"
+      phrase_list:
+        phrases: []
+      authentication:
+        reuse_cached_credentials: true
+      request:
+        timeout_seconds: 600
+        max_retries: 3
 ```
 
 Azure Speech Fast Transcriptionには、Whisperのようなmodel名の選択設定がありません。
@@ -725,7 +722,7 @@ Azureの既定値は話者分離なし・伏字なしです。
 API `2025-10-15`以降が必要です。
 認識候補を優先させる機能であり、正解を強制する辞書ではないため、まずは会話に関連する少数の用語から試します。
 ひらがなの読みではなく、文字起こし結果に出したい表記を列挙します。
-次は `transcription.cloud.profiles.azure-ja` 内の `phrase_list` 部分だけを変更する例です。他の設定は残してください。
+次は `transcription_profiles.cloud.azure-ja` 内の `phrase_list` 部分だけを変更する例です。他の設定は残してください。
 
 ```yaml
 phrase_list:
@@ -832,7 +829,7 @@ CLIで動く生成AI（Codex・Claude Code・GitHub Copilot・Antigravity）は�
 次は組み込みの値です。書かなくても同じ値になります。
 
 ```yaml
-schema_version: "4.0.0"
+schema_version: "5.0.0"
 
 genai_profiles:
   codex-default:
@@ -861,12 +858,12 @@ generation:
 
 ## 入力フォルダを設定する（sources）
 
-[`pull`](#pull) が処理する入力フォルダは、設定の `sources` に名前を付けて書きます。入力フォルダごとに、出力先、プロファイル、原本の保管先を決められます。`sources` は設定schema `"3.2.0"` で追加しました。使うときは、その設定ファイルの `schema_version` を `"3.2.0"` 以上にしてください。`archive.name: created-time-original` は `"3.3.0"` で追加したため、使うときは `"3.3.0"` 以上にしてください。
+[`pull`](#pull) が処理する入力フォルダは、設定の `sources` に名前を付けて書きます。入力フォルダごとに、出力先、プロファイル、原本の保管先を決められます。
 
 次は、サウンドレコーダーの録音を保管してからAzureで文字起こしし、成功したら録音フォルダから消す例です。パスは自分の環境に置き換えてください。
 
 ```yaml
-schema_version: "4.0.0"
+schema_version: "5.0.0"
 
 sources:
   recordings:
@@ -887,7 +884,7 @@ sources:
 | `output_dir` | ○ | | 文字起こしの保存先ルート。`--output-dir` と同じ扱い |
 | `include` | | 主な音声形式（`*.flac`、`*.m4a`、`*.mp3`、`*.wav`、`*.wma`、`*.aac`、`*.ogg`、`*.opus`） | 対象にするファイル名のパターン。大文字と小文字を区別しない |
 | `min_age_seconds` | | `30` | 最終更新からこの秒数がたっていないファイルを飛ばす。`pull --ignore-min-age` の回は使わない |
-| `profile` | | `transcription.active` | 使うプロファイル（`MODE/NAME`） |
+| `profile` | | `transcription.profile` | 使うプロファイル（`MODE/NAME`） |
 | `archive.dir` | `archive` を書くとき○ | | 原本の保管先 |
 | `archive.name` | | `created-time` | 保管名。`created-time`、`created-time-original`、`original` のいずれか |
 | `archive.delete_source` | | `false` | `true` なら、保管と文字起こしの成功後に入力ファイルを消す |
@@ -921,7 +918,7 @@ sources:
 2. `~/.tkn/audio_transcriber/config.yaml`
 3. `./.tkn/config.yaml`
 4. 明示した`--config`
-5. 設定済み`transcription.active.{mode,profile}`または`--profile MODE/NAME`
+5. 設定済み`transcription.profile`または`--profile MODE/NAME`
 6. 個別CLI option
 
 unknown key、不正type、未対応`schema_version`はerrorです。
@@ -929,16 +926,13 @@ unknown key、不正type、未対応`schema_version`はerrorです。
 `schema_version`は上位sourceから上書きする設定値ではなくsource metadataとして扱います。
 `config list`では選択profile、利用可能profile、各effective値のsource、各設定sourceのschema状態を確認できます。
 
-application-owned設定の独立したschema versionは`"4.0.0"`です。
+application-owned設定の独立したschema versionは`"5.0.0"`です。
 3要素のstringを必須とします。
-`"4.0.0"` では、生成AIの接続先を `genai_profiles` に書き、`generation.genai_profile` で直接選ぶようにしました。`generation.active_profile` と `generation.profiles`（中の `bridge_profile` を含む）はなくなりました。
-`generation` を書けるschema 2以降のどの版でも、`generation.active_profile`・`generation.profiles` は書き換え方を示すerrorになります。
-これらを使っていない`3.0.x`～`3.3.x`設定は編集不要です。構造を変えない新しいPatch（例: `"4.0.7"`）も受け付けます。`sources` を使う設定ファイルは`"3.2.0"`以上、`archive.name: created-time-original` を使う設定ファイルは`"3.3.0"`以上、`genai_profiles`・`generation.genai_profile`・`sources.<name>.correction` を使う設定ファイルは`"4.0.0"`以上が必要です。
-新しいMinor/Major、検証済み移行がない古いversion、不正形式、version欠落は、必要なactionを示すerrorになります。
-
-平坦な`1.0.x`、`1.1.x`、旧integer `schema_version: 1`、混在profile形式の`2.0.x`はin-memoryでlocal/cloud分離構造へ変換して読み取り、warningを表示します。
-読み取りだけではfileを書き換えません。
-schema 1・2に`config migrate`を実行すると、validation、backup、atomic replacementを経てschema `"4.0.0"`を永続化します。移した設定ファイルには `genai_profiles` を書かず、`generation` は元の設定ファイルに書いた項目だけを書きます。ユーザー設定の接続先を上書きしないためです。schema 2の設定ファイルで `generation.profiles` を使っていたら、その設定ファイルのまま `generation.genai_profile` に書き換えてから `config migrate` を実行します。schema 3の設定ファイルは書き換えず、`unchanged` を返します。
+構造を変えない新しいPatch（例: `"5.0.7"`）も受け付けます。
+`"5.0.0"` では、使う文字起こしprofileを `transcription.profile` に `local/NAME` または `cloud/NAME` で書き、profileの定義を `transcription_profiles.local`・`transcription_profiles.cloud` に書きます。
+各profileには `provider`（`local` は `faster-whisper`、`cloud` は `azure-speech-fast`）を書きます。
+古いMajor（`4.x` 以前）、新しいMinor/Major、不正形式、version欠落は、必要なactionを示すerrorになります。
+古いMajorの設定ファイルを読む経路と、移す経路はありません。
 
 ## 再実行と失敗時の動作
 
@@ -1014,7 +1008,7 @@ uv tool install . --reinstall
 tkn-audio-transcriber --version
 ```
 
-旧設定は読み取り時にメモリ上で変換されます。設定ファイルを現在の形式に保存する場合は、[`config migrate`](#config-migrate) のプレビューとバックアップの説明を確認してください。版ごとの差は [CHANGELOG.md](CHANGELOG.md) に記録しています。
+版ごとの差は [CHANGELOG.md](CHANGELOG.md) に記録しています。
 
 ## 文字起こし参考ベンチマーク
 

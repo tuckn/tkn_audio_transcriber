@@ -23,7 +23,7 @@ from audio_transcriber.validation import validate_artifact
 ENDPOINT = "https://example.cognitiveservices.azure.com/"
 
 
-def _config_file(tmp_path: Path, source_body: str, *, schema: str = "3.2.0") -> Path:
+def _config_file(tmp_path: Path, source_body: str, *, schema: str = "5.0.0") -> Path:
     path = tmp_path / "config.yaml"
     path.write_text(
         f'schema_version: "{schema}"\n'
@@ -243,7 +243,7 @@ def test_created_time_and_original_name_when_configured(tmp_path: Path) -> None:
     taken.parent.mkdir(parents=True)
     taken.write_bytes(b"a different recording")
     config_file = _config_file(
-        tmp_path, ARCHIVE + "      name: created-time-original\n", schema="3.3.0"
+        tmp_path, ARCHIVE + "      name: created-time-original\n", schema="5.0.0"
     )
 
     payload = _pull(tmp_path, config_file)
@@ -623,12 +623,26 @@ def test_cli_pull_does_not_need_an_unused_active_profile(
     config_file = _config_file(tmp_path, ARCHIVE)
     with config_file.open("a", encoding="utf-8") as stream:
         # The built-in azure-ja profile has no endpoint, so it cannot be resolved.
-        stream.write("transcription:\n  active:\n    mode: cloud\n    profile: azure-ja\n")
+        stream.write("transcription:\n  profile: cloud/azure-ja\n")
 
     assert main(["pull", "--config", str(config_file), "--dry-run", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "planned"
     assert payload["items"][0]["profile"] == "local/local-small"
+
+
+def test_cli_pull_uses_the_configured_profile_for_a_source_without_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _cli_env(tmp_path, monkeypatch)
+    _recording(tmp_path)
+    config_file = _config_file(tmp_path, "")
+    with config_file.open("a", encoding="utf-8") as stream:
+        stream.write("transcription:\n  profile: local/local-large\n")
+
+    assert main(["pull", "--config", str(config_file), "--dry-run", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["items"][0]["profile"] == "local/local-large"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows reparse tags")

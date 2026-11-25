@@ -88,7 +88,7 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
 
     config_parser = commands.add_parser(
-        "config", help="Initialize, inspect, or migrate configuration."
+        "config", help="Initialize, inspect, or check configuration."
     )
     config_commands = config_parser.add_subparsers(dest="config_command", required=True)
     config_init = config_commands.add_parser(
@@ -117,7 +117,7 @@ def _parser() -> argparse.ArgumentParser:
         help="List available transcription profiles and the active selection."
     )
     config_migrate = config_commands.add_parser(
-        "migrate", help="Migrate one config to the current schema with a backup."
+        "migrate", help="Report whether one config file is written in the current schema."
     )
     config_migrate.add_argument(
         "path",
@@ -126,7 +126,7 @@ def _parser() -> argparse.ArgumentParser:
         help="Config path (default: ~/.tkn/audio_transcriber/config.yaml).",
     )
     config_migrate.add_argument(
-        "--dry-run", action="store_true", help="Validate and print the plan without writing."
+        "--dry-run", action="store_true", help="Has no effect; this command never writes."
     )
 
     model_parser = commands.add_parser("model", help="Manage local faster-whisper models.")

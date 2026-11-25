@@ -214,7 +214,7 @@ def test_prepare_cli_json_and_options(
         if output_mode == "config":
             config_path = tmp_path / "settings.yaml"
             config_path.write_text(json.dumps({
-                "schema_version": "3.1.0",
+                "schema_version": "5.0.0",
                 "folders": {"output": str(expected_root)},
             }), encoding="utf-8")
             args.extend(["--config", str(config_path)])
